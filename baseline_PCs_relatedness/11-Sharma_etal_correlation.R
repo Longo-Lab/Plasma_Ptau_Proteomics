@@ -1,0 +1,118 @@
+#!/usr/bin/env Rscript
+## ---------------------------
+##
+## Script name: 04-TREAT-AD_correlation.R
+##
+## Version: 0.0.2
+##
+## Purpose of script: Show Correlation of Sharma_etal proteomic celltype
+##  profiles with PlasmaPtau181 geneset
+##
+## Author: Robert B Butler III
+##
+## Date Created: 2022-12-21
+##
+## Copyright (c) 2022
+## Email: rrbutler@stanford.edu
+##
+## ---------------------------
+##
+## Notes:
+##   Currently hardcodes the input files (good target for options funtion)
+##   paper DOI: none, need to publish
+##
+##   Using T stat of Ptau with Pro_TE for TREAT-AD
+##
+## ---------------------------
+
+## load up the packages we will need:  (uncomment as required)
+library(data.table)
+library(corrplot)
+library(stringr)
+
+# directory locations
+rootdir = '/mnt/c/Users/rrbutler/Documents/SRCF_shutdown'
+wk_dir = paste0(rootdir, '/plasma_ptau_proteomics/baseline')
+setwd(wk_dir)
+refdir = paste0(rootdir, '/plasma_ptau_proteomics/cell_type_prot')
+prefix = "dataProt_SS-205063.pTau.baseline"
+nameset = "Sharma_etal"
+
+# Functions -------------------------
+
+
+# Main -------------------------
+## DE file locations
+# load files
+ptau = fread(paste(prefix, "csv", sep="."))
+
+#thresholds of cutoff
+ptau[, stat_pval := ifelse(pval < 0.05, `t stat`, NA)]
+ptau[, stat_padj := ifelse(padj < 0.05, `t stat`, NA)]
+
+# read in biodomains
+types = c("cultured", "isolated")
+trt = lapply(types, function(i) {
+  fread(paste0(refdir, "/Sharma_etal_prot_celltypes.", i, ".scaled.csv"))
+})
+
+# merge tables
+dt = lapply(trt, function(i) {
+  merge(i, ptau[, .(GENE, `t stat`, stat_pval, stat_padj)], all.x=T, by="GENE")
+})
+
+# calc correlations (exclude all is.na(beta) )
+cors = c("t stat", "stat_pval", "stat_padj")
+corr_list = lapply(dt, function(j) lapply(cors, function(i){
+  j[!is.na(get(i)) & !is.na(z.log2LFQ)
+    ][, N := .N, by=celltype
+      ][N >= 2
+        ][, cor.test(get(i), z.log2LFQ, method="pearson")[-c(2, 9)], by=celltype]
+}))
+
+# label and collapse
+lapply(corr_list, function(i) {
+  setattr(i, 'names', c("PlasmaPTau181", 
+                        "PlasmaPTau181 Pval < 0.05", 
+                        "PlasmaPTau181 Padj < 0.05"))
+})
+corrs = lapply(corr_list, function(i) rbindlist(i, idcol="group"))
+
+# calculate FDR per group (normally across all groups if not significance thresholds)
+lapply(corrs, function(i) i[, FDR := p.adjust(p.value, method="fdr"), by=group])
+
+# get matricies for heatmaps
+lapply(corrs, function(i) i[, group := factor(group, levels=names(corr_list[[1]]))])
+a = lapply(corrs, function(i) {
+  as.matrix(dcast(i, group ~ celltype, value.var="estimate"), rownames="group")
+})
+b = lapply(corrs, function(i) {
+  as.matrix(dcast(i, group ~ celltype, value.var="p.value"), rownames="group")
+})
+
+# plot cors
+pdf(file=paste(prefix, nameset, "correlations.pdf", sep="."), width=14, height=6)
+par(mfrow = c(2, 2))
+lapply(seq(a), function(i) {
+  corrplot(a[[i]], p.mat=b[[i]], sig.level=0.05, insig="blank", method="ellipse",
+           addCoef.col='dark grey', na.label="-", mar=c(0,0,2,0), tl.cex=1.5,
+           tl.col="black", tl.srt=45, cl.ratio=0.3,
+           title=sprintf("%s celltypes", types[i]))$corrPos -> p1
+  text(p1$x, p1$y, round(p1$corr, 2), col='dark grey')
+})
+dev.off()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
