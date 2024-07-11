@@ -44,8 +44,8 @@ library(patchwork)
 library(qqman)
 
 # directory locations
-rootdir = '/mnt/c/Users/rrbutler/Documents/SRCF_shutdown'
-wk_dir = paste0(rootdir, '/plasma_ptau_proteomics/baseline')
+rootdir = '/mnt/box/plasma_ptau_proteomics'
+wk_dir = paste0(rootdir, '/baseline')
 setwd(wk_dir)
 nameset = "dataProt_SS-205063.pTau.baseline"
 ensver = "109"

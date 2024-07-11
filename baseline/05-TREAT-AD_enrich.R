@@ -35,13 +35,12 @@ library(GeneOverlap)
 library(biomaRt)
 
 # directory locations
-rootdir = '/mnt/c/Users/rrbutler/Documents/SRCF_shutdown'
-wk_dir = paste0(rootdir, '/plasma_ptau_proteomics/baseline')
+rootdir = '/mnt/box/plasma_ptau_proteomics'
+wk_dir = paste0(rootdir, '/baseline')
 setwd(wk_dir)
-refdir = paste0(rootdir, '/reference/biodomains')
+refdir = paste0(rootdir, '/biodomains')
 prefix = "dataProt_SS-205063.pTau.baseline"
 nameset = "TREAT-AD"
-
 # Functions -------------------------------------
 gommat_2_dt = function(go, dt, dtype=c("pval", "odds.ratio", 
                        "intersection", "union", "Jaccard")) {

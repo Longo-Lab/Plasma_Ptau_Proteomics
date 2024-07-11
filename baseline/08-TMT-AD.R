@@ -35,10 +35,10 @@ library(GeneOverlap)
 library(biomaRt)
 
 # directory locations
-rootdir = '/mnt/c/Users/rrbutler/Documents/SRCF_shutdown'
-wk_dir = paste0(rootdir, '/plasma_ptau_proteomics/baseline')
+rootdir = '/mnt/box/plasma_ptau_proteomics'
+wk_dir = paste0(rootdir, '/baseline')
 setwd(wk_dir)
-refdir = paste0(rootdir, '/reference/biodomains')
+refdir = paste0(rootdir, '/biodomains')
 prefix = "dataProt_SS-205063.pTau.baseline"
 nameset = "TMT-AD"
 
@@ -270,7 +270,7 @@ names(updown_list) = paste(replacement, f_names_updown)
 
 # TMT-AD Proteomic modules ----------------------
 # read files (syn25677919 and syn25428992)
-tmt = fread(paste0(refdir, "/TMT-LP.Human.Genes.txt"))
+tmt = fread(paste0(refdir, "/TMT-AD.Human.Genes.txt"))
 
 # limit to background of SOMALOGIC detectable proteins
 tmt = tmt[GENE %in% result$GENE]
