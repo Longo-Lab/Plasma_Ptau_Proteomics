@@ -37,18 +37,73 @@
 
 ## load up the packages we will need:  (uncomment as required)
 library(data.table)
+library(optparse)
+library(tools)
+library(stringr)
 # library(lmerTest) # loads lme4
 setDTthreads(percent=75)
 
-# directory locations
-rootdir = '/mnt/box/plasma_ptau_proteomics'
-wk_dir = paste0(rootdir, '/baseline')
-setwd(wk_dir)
-refdir = paste0(rootdir, '/biodomains')
+# Nameset helper function
+nameset_default <- function(input){
+  file_path_sans_ext(basename(input))
+}
+
+# read in args
+option_list <- list(
+  make_option(
+    c("-i", "--input"),
+    type = "character",
+    default = ".",
+    help = "File path to DE input file (*.csv.gz)[default: %default]"
+  ),
+  make_option(
+    c("-o", "--output"),
+    type = "character",
+    default = ".",
+    help = "File path to output directory [default: %default]"
+  ),
+  make_option(
+    c("-n", "--nameset"),
+    type = "character",
+    help = "Name of project [default: Nameset of input]"
+  ),
+  make_option(
+    c("-c", "--outcome"),
+    type = "character",
+    help = "String specifying the column in data containing the outcome variable [required]"     
+  )
+)
+
+args_list <- parse_args(OptionParser(option_list = option_list))
+
+# Nameset default case
+if(is.null(args_list$nameset)){
+  args_list$nameset <- nameset_default(args_list$input)
+}
+
+# read in fields
+fields <- c(
+  "input",
+  "output",
+  "nameset",
+  "outcome"
+)
+
+# check for values
+for (field in fields) {
+  if (!field %in% names(args_list)) {
+    cat(str_c('Argument "', field, '" must be provided\n'), fill = TRUE)
+    stop(parse_args(OptionParser(option_list = option_list), args = "--help"),
+      call. = FALSE
+    )
+  }
+
+  assign(field, args_list[[field]])
+  print(paste0(field, ": ", get(field)))
+}
 
 # variables
-nameset = "dataProt_SS-205063.pTau.baseline"
-first_prot = "CRYBB2.10000.28.3"
+first_prot = "CRYBB2.10000.28.3"                                              # <------------ Do we need an option for range of prots?
 last_prot = "IRF6.9999.1.3"
 
 
@@ -96,7 +151,7 @@ recode_dummies = function(dat, dcol, keep=c()){
 
 
 # Main -------------------------
-dat = fread(paste0(nameset, '.INTnorm.csv.gz'))
+dat = fread(input)
 # dat$Diagnosis_group = factor(dat$Diagnosis_group, c("HC", "SCI", "MCI", "MCI-AD", "AD", "LBD"))
 names(dat) = make.names(names(dat))
 
@@ -113,7 +168,7 @@ dat = recode_dummies(dat, "Storage", keep=c("Negative.20C.LowVolume"))
 # variables to drop from the model (based on feature importance): 
 # best 2of3 (cv, pls, rf; either rf-impur or rf-perm stat can count as only one)
 drops = c("Diagnosis_group", "PIDN", "Visit", "DS1V", "SampleID", 
-          "PlasmaPTau181", "PlateId", "Subarray", "Freeze.Thaw", "Storage", 
+          outcome, "PlateId", "Subarray", "Freeze.Thaw", "Storage", 
           "Time.To.Ship", "sv5", "sv10", "sv11", "sv16", "sv21", "sv22", "sv23",
           "sv25", "sv29", "sv30", "sv32", "sv33", "sv34", "sv35", "sv36", "sv37",
           "sv38", "sv39")
@@ -126,20 +181,20 @@ cols = cols[! cols %in% drops]
 print(paste("Running covs:", paste(cols, collapse=", ")))
 
 # make out table
-outs = c("PlasmaPTau181") # define dependent variables by column names 
+outs = outcome            # define dependent variables by column names                                                                
                           # type them out or specify index range, or by regex)
 exps = c(names(dat)[grep(first_prot, names(dat))[1]:last(grep(last_prot, names(dat)))]) # same with independent variables
 dt1 = CJ(dx=outs, ix=exps)
 
 # fast run function
-dt1[, c("beta", "se", "t stat", "pval", "nobs") := get_linreg(dat, dx, ix, cols), by=dt1[,.I]]
+dt1[, c("beta", "se", "t stat", "pval", "nobs") := get_linreg(dat, dx, ix, cols), by=.I]
 
 # remove Xs needed for formula
 dt1[startsWith(ix, "X."), ix := gsub("^X.", ".", ix)]
-fwrite(dt1, file=paste(nameset, "linreg_glm", "csv.gz", sep="."))
+fwrite(dt1, file=file.path(output, paste(nameset, "linreg_glm", "csv.gz", sep=".")))
 
 # cleanup
-system("squeue -j $SLURM_JOBID --Format=TimeUsed")
+# system("squeue -j $SLURM_JOBID --Format=TimeUsed")
 
 
 # # model testing ---------------------

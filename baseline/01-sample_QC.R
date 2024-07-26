@@ -45,22 +45,76 @@ library(pls)     # for fitting PLS models
 library(caret)    # for tuning models
 library(ranger)   # a c++ implementation of random forest 
 library(vip)       # for variable importance
+library(optparse)
 
-# directory locations
-rootdir = '/mnt/box/plasma_ptau_proteomics'
-wk_dir = paste0(rootdir, '/baseline')
-setwd(wk_dir)
-refdir = paste0(rootdir, '/biodomains')
+# Nameset helper function
+nameset_default <- function(input){
+  file_path_sans_ext(basename(input))
+}
+
+# read in args
+option_list <- list(
+  make_option(
+    c("-i", "--input"),
+    type = "character",
+    default = ".",
+    help = "File path to DE input file [default: %default]"
+  ),
+  make_option(
+    c("-o", "--output"),
+    type = "character",
+    default = ".",
+    help = "File path to output directory [default: %default]"
+  ),
+  make_option(
+    c("-c", "--outcome"),
+    type = "character",
+    help = "String specifying the column in data containing the outcome variable [required]"     
+  ),
+  make_option(
+    c("-n", "--nameset"),
+    type = "character",
+    help = "Name of project [default: Nameset of input]"
+  )
+)
+
+args_list <- parse_args(OptionParser(option_list = option_list))
+
+# Nameset default case
+if(is.null(args_list$nameset)){
+  args_list$nameset <- nameset_default(args_list$input)
+}
+
+# read in fields
+fields <- c(
+  "input",
+  "output",
+  "outcome",
+  "nameset"
+)
+
+# check for values
+for (field in fields) {
+  if (!field %in% names(args_list)) {
+    cat(str_c('Argument "', field, '" must be provided\n'), fill = TRUE)
+    stop(parse_args(OptionParser(option_list = option_list), args = "--help"),
+      call. = FALSE
+    )
+  }
+
+  assign(field, args_list[[field]])
+  print(paste0(field, ": ", get(field)))
+}
 
 # variables
-nameset = "dataProt_SS-205063.pTau.baseline"
-first_prot = "CRYBB2.10000.28.3"
+first_prot = "CRYBB2.10000.28.3"                                              # <------------ Do we need an option for range of prots?
 last_prot = "IRF6.9999.1.3"
 
 
 # Main -----------------------
 # So, the final INTnorm dataset:
-a = fread('../dataProt_SS-205063.hybNorm.medNormInt.plateScale.calibrate.anmlQC.qcCheck.anmlSMP_ADRC_Feb2021_plasmaptauadded_Ted.csv')
+# a = fread('../dataProt_SS-205063.hybNorm.medNormInt.plateScale.calibrate.anmlQC.qcCheck.anmlSMP_ADRC_Feb2021_plasmaptauadded_Ted.csv')
+a = fread(input)
 
 # Initial QC filters
 a = a[SampleType == "Sample"]
@@ -68,7 +122,8 @@ a = a[!is.na(PlasmaPTau181)]
 a = a[RowCheck == "PASS"]
 # filter out missing diagnosis, PD people
 pd_folks = c(unique(a$Diagnosis_group[a$Diagnosis_group %like% "PD"]), "")
-a = a[!Diagnosis_group %in% pd_folks]
+lbd_folks = c(unique(a$Diagnosis_group[a$Diagnosis_group %like% "LBD"]), "")
+a = a[!Diagnosis_group %in% c(pd_folks, lbd_folks)]
 # # Storage days has a few NAs
 # a = a[!is.na(Storage_days)]
 # recode Subarray to letters to avoid confusing as quantitative
@@ -173,7 +228,7 @@ a[abs(ConnectivityZscore) > 3, ..cols]
 
 # plots connectivity histogram
 p1 = ggplot(a, aes(x=ConnectivityZscore)) + geom_histogram()
-ggsave(paste(nameset, "ConnectivityZscore.pdf", sep="."), p1, useDingbats=F)
+ggsave(paste(nameset, "ConnectivityZscore.pdf", sep = "."), p1, useDingbats = F, path = output)
 
 # One sample had an extreme Z-score, less than -23. Participant's baseline visit
 # was in a normal range, and there was no other metadata explaining the outlier.
@@ -201,7 +256,7 @@ colnames(samplePoisDistMatrix) = b[, SampleID]
 colors = colorRampPalette(brewer.pal(11, "RdYlBu"))(255)
 pheatmap(samplePoisDistMatrix, col=colors, clustering_distance_rows=poisd$dd,
          clustering_distance_cols=poisd$dd, width=110, height=85, border_color=NA,
-         filename=paste(nameset, "Poisson_distance.pdf", sep="."))
+         filename=file.path(output, paste(nameset, "Poisson_distance.pdf", sep=".")))
 
 # Some groupings that could be interesting, one major outlier is the same one
 # from z-score connectivity, final check PCA
@@ -253,7 +308,7 @@ my_pca_plot = function(vst, c_by, c_lab, c_type="disc", num=1000000) {
 }
 
 # Plot PCAs
-pdf(file=paste(nameset, "pca_plots.pdf", sep="."), onefile=T, paper="USr", 
+pdf(file=file.path(output, paste(nameset, "pca_plots.pdf", sep=".")), onefile=T, paper="USr", 
     width=11, height=8.5)
 my_pca_plot(t(as.matrix(b, rownames="SampleID")), c_by="Diagnosis_group", 
             c_lab="Diagnosis_group", c_type="disc")
@@ -281,7 +336,7 @@ a[duplicated(PIDN) | Visit > 1, ..cols]
 
 # Inverse rank normalization (INT) to z-scale
 cols = names(a)[grep(first_prot, names(a)):grep(last_prot, names(a))]
-cols = c("PlasmaPTau181", cols)
+cols = c(outcome, cols)
 a[, (cols) := lapply(.SD, RankNorm), .SDcols=cols]
 
 # generate surrogate variables ---------------------------------------
@@ -296,7 +351,7 @@ pheno = data.frame(a[, ..cols], row.names="SampleID")
 all(colnames(prot) == rownames(pheno))
 
 # defining models
-mod = model.matrix(~ PlasmaPTau181, data=pheno)
+mod = model.matrix(as.formula(paste("~", outcome)), data=pheno)
 mod0 = model.matrix(~ 1, data=pheno)
 svobj = sva(prot,mod,mod0)
 
@@ -319,14 +374,14 @@ b = a[, ..cols]
 b = b[complete.cases(b)] # drop missing values for feature importance testing
 
 # include all possible main effects
-model = glm(PlasmaPTau181 ~ ., data=b) 
+model = glm(as.formula(paste(outcome, "~", ".")), data=b) 
 # PlateRunDate & ScannerID cannot be fit to a glm model
 b[, c("PlateRunDate", "ScannerID") := NULL ]
 
 # simple training
 set.seed(123)
 cv_model <- train(
-  PlasmaPTau181 ~ ., 
+  as.formula(paste(outcome, "~", ".")), 
   data = b, 
   method = "glm",
   trControl = trainControl(method = "cv", number = 50)
@@ -344,7 +399,7 @@ cv_model <- train(
 
 set.seed(123)
 cv_model_pls <- train(
-  PlasmaPTau181 ~ ., 
+  as.formula(paste(outcome, "~", ".")), 
   data = b, 
   method = "pls",
   trControl = trainControl(method = "cv", number = 10),
@@ -379,7 +434,7 @@ n_features <- ncol(b) - 1
 
 # train a default random forest model
 rf1 <- ranger(
-  PlasmaPTau181 ~ ., 
+  as.formula(paste(outcome, "~", ".")), 
   data = b,
   mtry = floor(n_features / 3),
   respect.unordered.factors = "order"
@@ -400,7 +455,7 @@ hyper_grid <- expand.grid(
 for(i in seq_len(nrow(hyper_grid))) {
   # fit model for ith hyperparameter combination
   fit.rf <- ranger(
-    formula = PlasmaPTau181 ~ ., 
+    formula = as.formula(paste(outcome, "~", ".")), 
     data = b,
     mtry            = hyper_grid$mtry[i],
     min.node.size   = hyper_grid$min.node.size[i],
@@ -423,7 +478,7 @@ top = hyper_grid %>%
 
 # re-run model with impurity-based variable importance
 rf_impurity <- ranger(
-  formula = PlasmaPTau181 ~ ., 
+  formula = as.formula(paste(outcome, "~", ".")), 
   data = b,
   num.trees = 2000,
   mtry = top$mtry[1],
@@ -437,7 +492,7 @@ rf_impurity <- ranger(
 
 # re-run model with permutation-based variable importance
 rf_permutation <- ranger(
-  formula = PlasmaPTau181 ~ ., 
+  formula = as.formula(paste(outcome, "~", ".")), 
   data = b,
   num.trees = 2000,
   mtry = top$mtry[1],
@@ -461,7 +516,7 @@ p4 <- vip::vip(rf_permutation, geom="point", num_features = 50, bar = FALSE) +
 # AACCCCCC
 # BBCCCCCC
 # "
-pdf(file=paste(nameset, "feature_importance.pdf", sep="."), width=11, height=11)
+pdf(file = file.path(output, paste(nameset, "feature_importance.pdf", sep=".")), width=11, height=11)
 p1 + p2 + p3 + p4
 dev.off()
 
@@ -470,7 +525,7 @@ dev.off()
 a[, c("PlateRunDate", "ScannerID") := NULL ]
 
 
-fwrite(a, file=paste(nameset, "INTnorm.csv.gz", sep="."))
+fwrite(a, file = file.path(output, paste(nameset, "INTnorm.csv.gz", sep=".")))
 
 
 

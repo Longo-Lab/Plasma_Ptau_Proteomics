@@ -7,12 +7,12 @@
 ##
 ## Purpose of script: Prepare LnPlasmaPTau data for gene set analyses
 ##
-## Author: Robert B Butler III
+## Author: Robert B Butler III, Michael Peter Brown
 ##
 ## Date Created: 2022-12-21
 ##
 ## Copyright (c) 2022
-## Email: rrbutler@stanford.edu
+## Email: rrbutler@stanford.edu, mpb@stanford.edu
 ##
 ## ---------------------------
 ##
@@ -42,13 +42,73 @@ library(ggpubr)
 library(gprofiler2)
 library(patchwork)
 library(qqman)
+library(optparse)
+library(tools)
 
-# directory locations
-rootdir = '/mnt/box/plasma_ptau_proteomics'
-wk_dir = paste0(rootdir, '/baseline')
-setwd(wk_dir)
-nameset = "dataProt_SS-205063.pTau.baseline"
+
+# Nameset helper function
+nameset_default <- function(input){
+  file_path_sans_ext(basename(input))
+}
+
+# read in args
+option_list <- list(
+  make_option(
+    c("-i", "--input"),
+    type = "character",
+    default = ".",
+    help = "File path to DE input file [default: %default]"
+  ),
+  make_option(
+    c("-o", "--output"),
+    type = "character",
+    default = ".",
+    help = "File path to output directory [default: %default]"
+  ),
+  make_option(
+    c("-r", "--ref"),
+    type = "character",
+    default = "..",
+    help = "File path to directory of reference data [default: %default]"
+  ),
+  make_option(
+    c("-n", "--nameset"),
+    type = "character",
+    help = "Name of project [default: Nameset of input]"
+  )
+)
+
+args_list <- parse_args(OptionParser(option_list = option_list))
+
+# Nameset default case
+if(is.null(args_list$nameset)){
+  args_list$nameset <- nameset_default(args_list$input)
+}
+
+# read in fields
+fields <- c(
+  "input",
+  "output",
+  "ref",
+  "nameset"
+)
+
+# check for values
+for (field in fields) {
+  if (!field %in% names(args_list)) {
+    cat(str_c('Argument "', field, '" must be provided\n'), fill = TRUE)
+    stop(parse_args(OptionParser(option_list = option_list), args = "--help"),
+      call. = FALSE
+    )
+  }
+
+  assign(field, args_list[[field]])
+  print(paste0(field, ": ", get(field)))
+}
+
+
 ensver = "109"
+
 
 # Functions -------------------------------------
 convertGeneSymbol = function(dt, colname, keep.symbols=F){
@@ -100,12 +160,13 @@ get_mcols = function(str, dds, col) {
 
 # Main ------------------------------------------
 # Load assocaition table
-a = fread(paste0(nameset, '.linreg_glm.csv.gz'))
+a = fread(input)
 a = a[ix != ""]
 # a$variable = gsub("^X\\.", "\\.", a$variable)
 
 # map to reference key
-b = fread("../Somalogic_reference_Key.txt")
+# b = fread("../Somalogic_reference_Key.txt")   
+b = fread(ref)                               
 b = b[Organism == "Human" & Type == "Protein"]
 b[, c("Organism", "Units", "Type", "EntrezGeneSymbol_v2") := NULL]
 c = merge(a, b, by.x="ix", by.y="Key_2")
@@ -161,7 +222,7 @@ ggsave(plot=p2 +
          inset_element(p1, left=0.05, top=1, bottom=0.6, right=0.3) +
          inset_element(p3, left=0.7, top=1, bottom=0.6, right=0.95), 
        filename=paste(nameset, "beta_distributions.pdf", sep="."),
-       width=10, height=6, device=cairo_pdf)
+       path=output, width=10, height=6, device=cairo_pdf)
 
 # write gene lists
 sets = list(all = c[padj < 0.05, .(GENE, beta)][order(-abs(beta))],
@@ -172,10 +233,10 @@ sets = list(all = c[padj < 0.05, .(GENE, beta)][order(-abs(beta))],
             top.bonf = c[pbonf < 0.05 & beta > 0, .(GENE, beta)][order(-beta)],
             bottom.bonf = c[pbonf < 0.05 & beta < 0, .(GENE, beta)][order(beta)])
 lapply(seq(sets), function(i) {
-  fwrite(sets[[i]], file=paste(nameset, names(sets)[i], "txt", sep="."), 
-         sep="\t", col.names=F)
+  fwrite(sets[[i]], file = file.path(output, paste(nameset, names(sets)[i], "txt", sep = ".")), 
+         sep = "\t", col.names = F)
 })
-fwrite(c, file=paste(nameset, "csv", sep="."))
+fwrite(c, file=file.path(output, paste(nameset, "csv", sep=".")))
 
 # gprofiler enrichment
 g = gost(query=sets, organism="hsapiens", ordered_query=T, evcodes=T, 
@@ -185,7 +246,7 @@ if(is.list(g$result)){
   # get symbols for terms
   g$result$symbols = lapply(g$result$intersection, get_mcols, c, "EntrezGeneSymbol")
   # write to file
-  fwrite(g$result, paste0(nameset, ".gprofiler.csv"))
+  fwrite(g$result, file = file.path(output, paste0(nameset, ".gprofiler.csv")))
 }
 
 

@@ -30,18 +30,64 @@ library(data.table)
 library(synapser)
 library(clusterProfiler)
 library(tidyverse)
+library(optparse)
 # library(biomaRt)
 
-# directory locations
-rootdir = '/mnt/c/Users/rrbutler/Documents/SRCF_shutdown'
-wk_dir = paste0(rootdir, '/plasma_ptau_proteomics/baseline')
-setwd(wk_dir)
-refdir = paste0(rootdir, '/reference/biodomains')
-prefix = "dataProt_SS-205063.pTau.baseline"
-nameset = "TREAT-AD"
+# Nameset helper function
+nameset_default <- function(input){
+  file_path_sans_ext(basename(input))
+}
+
+# read in args
+option_list <- list(
+  make_option(
+    c("-i", "--input"),
+    type = "character",
+    default = ".",
+    help = "File path to DE input file [default: %default]"
+  ),
+  make_option(
+    c("-o", "--output"),
+    type = "character",
+    default = ".",
+    help = "File path to output directory [default: %default]"
+  ),
+  make_option(
+    c("-n", "--nameset"),
+    type = "character",
+    help = "Name of project [default: Nameset of input]"
+  )
+)
+
+args_list <- parse_args(OptionParser(option_list = option_list))
+
+# Nameset default case
+if(is.null(args_list$nameset)){
+  args_list$nameset <- nameset_default(args_list$input)
+}
+
+# read in fields
+fields <- c(
+  "input",
+  "output",
+  "nameset"
+)
+
+# check for values
+for (field in fields) {
+  if (!field %in% names(args_list)) {
+    cat(str_c('Argument "', field, '" must be provided\n'), fill = TRUE)
+    stop(parse_args(OptionParser(option_list = option_list), args = "--help"),
+      call. = FALSE
+    )
+  }
+
+  assign(field, args_list[[field]])
+  print(paste0(field, ": ", get(field)))
+}
 
 # Login to synapse
-synLogin()
+synLogin(authToken="eyJ0eXAiOiJKV1QiLCJraWQiOiJXN05OOldMSlQ6SjVSSzpMN1RMOlQ3TDc6M1ZYNjpKRU9VOjY0NFI6VTNJWDo1S1oyOjdaQ0s6RlBUSCIsImFsZyI6IlJTMjU2In0.eyJhY2Nlc3MiOnsic2NvcGUiOlsidmlldyIsImRvd25sb2FkIl0sIm9pZGNfY2xhaW1zIjp7fX0sInRva2VuX3R5cGUiOiJQRVJTT05BTF9BQ0NFU1NfVE9LRU4iLCJpc3MiOiJodHRwczovL3JlcG8tcHJvZC5wcm9kLnNhZ2ViYXNlLm9yZy9hdXRoL3YxIiwiYXVkIjoiMCIsIm5iZiI6MTcyMDU1Mjc2OCwiaWF0IjoxNzIwNTUyNzY4LCJqdGkiOiI5ODcwIiwic3ViIjoiMzUwODUyNyJ9.pocXji9g6HdmEVGwmmocFx3EnTwrW79Dw7UTjmfBm2hkzUlPoa-BRanhnT_XZ5v4zN4a-uiEn_l91vzvyl-jPXE8jU9b9En-eD1wgL2zhsnBDNTiV0DiGf5OgUzjkk3ifxoc3Qu9FS3uLFZUA0l2ia4tbLRi4q5e6taMlwsPFbSFJuWHsM8EDb6B9_jdcrSkOof_DPELq4_W0FYTLQoeW6QjzvX5eGT_nhVREqz1vvJVJDO_BtUJ3a8YVJjI-yAP_wZoXE-DFrVsssuabDogbkfgsv7T0speO3ZZBUkDVVYesLkYAdJWMDL84ZJ_kCAb8HXXy88YDqCVvGDATy8rqA")
 
 # Functions ---------------------------
 # function to count enriched terms by biodomain
@@ -67,9 +113,10 @@ bd.tally <- function( enrTerm, biodomDefTbl = biodom ){
 }
 
 # Main ------------------------------------------
-# DE file filtering and ordering
-ptau = fread(paste(prefix, "csv", sep="."))
-pfilt = ptau[!is.na(GENE) , .(beta, GENE)][order(-beta)]
+# DE file filtering and ordering (dataProt_SS-205063.pTau.baseline.csv)
+# `bm`~ biomarker
+bm = fread(input)
+pfilt = bm[!is.na(GENE) , .(beta, GENE)][order(-beta)]
 pfilt = pull(pfilt, beta, GENE)
 
 # load biodom reference table
@@ -93,7 +140,7 @@ enr <- gseGO(geneList = pfilt, ont = 'all', keyType = "ENSEMBL",
              eps = 0, pvalueCutoff = 1, scoreType = 'std')
 
 # count the number of significant terms per biodomain
-bdt <- bd.tally(enr@result %>% filter(p.adjust < 0.05) %>% pull(Description), biofilt)
+bdt <- bd.tally(enr@result %>% filter(p.adjust < 0.05) %>% pull(Description))     # Removed the last field `, biofilt)` to test functionality, `biofilt` is commented atm
 
 # annotate results with biodomain information for plotting
 enr@result <- enr@result %>% 
@@ -105,7 +152,7 @@ enr@result <- enr@result %>%
     bdt$label %>% str_subset(.,'none', negate = T) %>% c('none',.) )) %>% 
   arrange(label)
 
-saveRDS(enr, file=paste(prefix, nameset, "GSEA_Biodomain.rds", sep="."))
+saveRDS(enr, file=file.path(output, paste(nameset, "GSEA_Biodomain.rds", sep=".")))
 
 # plot
 plot <- ggplot(enr@result, aes( label, NES )) + theme_minimal()+
@@ -128,7 +175,7 @@ plot <- ggplot(enr@result, aes( label, NES )) + theme_minimal()+
 
 # use plotly to interactively explore plots
 p = plotly::ggplotly(plot, tooltip = 'text')
-htmlwidgets::saveWidget(p, paste(prefix, nameset, "GSEA_Biodomain.html", sep="."),
+htmlwidgets::saveWidget(p, file.path(output, paste(nameset, "GSEA_Biodomain.html", sep=".")),
                         selfcontained=F)
 
 

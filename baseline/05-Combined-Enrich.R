@@ -3,21 +3,23 @@
 #'
 #' Script name: 12-Combined-Enrich.R
 #'
-#' Version: 0.0.3
+#' Version: 0.0.4
 #'
 #' Purpose of script: Show Fisher's Exact Enrichment of proteomic modules
 #' based on user input
 #'
-#' Author: Robert B Butler III, Michael Brown
+#' Author: Robert B Butler III, Michael Peter Brown
 #'
-#' Date Created: 2022-12-21
+#' Date Created: 2024-7-8
 #'
 #' Copyright (c) 2022
-#' Email: rrbutler@stanford.edu
+#' Email: rrbutler@stanford.edu, mpb@stanford.edu
 #'
 #' ---------------------------
 #'
 #' Notes:
+#'   v0.0.4 - added new option and extra error handling 
+#'   v0.0.4 - added output path to each instance of fwrite/pdf
 #'   v0.0.3 - added subset to reference genes that are only in SomaLogic spots
 #'   v0.0.3 - run styler
 #'   v0.0.3 - added command line support for biodomain folder
@@ -28,7 +30,6 @@
 #'
 #'
 #' ---------------------------
-
 #' load up the packages we will need:  (uncomment as required)
 library(optparse)
 library(ggplot2)
@@ -42,41 +43,57 @@ library(RColorBrewer)
 library(GeneOverlap)
 library(tools)
 
+# Nameset helper function
+nameset_default <- function(input){
+  file_path_sans_ext(basename(input))
+}
+
 # read in args
 option_list <- list(
   make_option(
     c("-m", "--modules"),
     type = "character",
-    help = "Module set desired to run"
+    help = "Module script set desired to run"
   ),
   make_option(
     c("-i", "--input"),
     type = "character",
     default = ".",
-    help = "Full path to DE input file [default: %default]"
+    help = "File path to DE input file [default: %default]"
   ),
   make_option(
     c("-o", "--output"),
     type = "character",
     default = ".",
-    help = "Full path to output directory [default: %default]"
+    help = "File path to output directory [default: %default]"
   ),
   make_option(
     c("-r", "--ref"),
     type = "character",
     default = "../biodomains",
-    help = "Full path to directory of reference data [default: %default]"
+    help = "File path to directory of reference data [default: %default]"
+  ),
+  make_option(
+    c("-n", "--nameset"),
+    type = "character",
+    help = "Name of project [default: Nameset of input]"
   )
 )
 
 args_list <- parse_args(OptionParser(option_list = option_list))
+
+# Nameset default case
+if(is.null(args_list$nameset)){
+  args_list$nameset <- nameset_default(args_list$input)
+}
 
 # read in fields
 fields <- c(
   "modules",
   "input",
   "output",
-  "ref"
+  "ref",
+  "nameset"
 )
 
 # check for values
@@ -92,16 +109,23 @@ for (field in fields) {
   print(paste0(field, ": ", get(field)))
 }
 
-# directory locations
-setwd(output)
-prefix <- file_path_sans_ext(basename(input))
-
+# Source() file path
 source_file <- file.path(ref, paste0("biodomain_", modules, ".R"))
-if (file.exists(source_file)) { # check input, can use a tryCatch since we expect it to be correct
-  source(source_file)
-} else {
-  stop(paste("The File doesn't exist:", source_file))
-}
+
+# Source() error/warning handling
+tryCatch(
+  expr = {
+    source(source_file)
+  },
+  error = function(e){
+    message('Error with source file:')
+    print(e)
+  },
+  warning = function(w){
+    message('Warning messages from source file:')
+    print(w)
+  }
+)
 
 # Functions ---------------------------
 gommat_2_dt <- function(go, dt, dtype = c(
@@ -134,7 +158,7 @@ gomtable <- function(list1, list2, background, outname, width = 7,
   # Takes two gene overlap lists and writes a table of stats, makes list object
   # list1: named list object
   # list2: named list object
-  # outname: name prefix for file
+  # outname: name nameset for file
   # width: width of pdf files to be plotted in inches*2
   # height: height of pdf files
   # returns a list object of table, r_names, c_names
@@ -143,7 +167,7 @@ gomtable <- function(list1, list2, background, outname, width = 7,
   r_names <- names(list1)
   c_names <- names(list2)
   # # geneoverlap heatmap
-  # pdf(file=paste(prefix, nameset, outname, "pval.pdf", sep="."),
+  # pdf(file=paste(nameset, nameset, outname, "pval.pdf", sep="."),
   # width=width*2, height=height)
   # drawHeatmap(gom.obj, grid.col="Blues", cutoff=1)
   # dev.off()
@@ -173,7 +197,7 @@ gomtable <- function(list1, list2, background, outname, width = 7,
   b <- merge(b, dt, by = c("sample", "group"), all.x = T, sort = F)
   # write and return
   fwrite(b,
-    file = paste(prefix, modules, outname, "txt", sep = "."), sep = "\t",
+    file = file.path(output, paste(nameset, modules, outname, "txt", sep = ".")), sep = "\t",
     quote = F
   )
   return(list("b" = b, "r_names" = r_names, "c_names" = c_names))
@@ -197,8 +221,8 @@ enrich <- function(list1, list2, gs, outname, width = 7, height = 7, fdr = TRUE,
     )
     e <- e[de_enrich$r_names, de_enrich$c_names, drop = F]
     # filename and heatmap
-    pdf(
-      file = paste(prefix, modules, outname, "logfdr.pdf", sep = "."), width = width,
+    pdf( 
+      file = file.path(output, paste(nameset, modules, outname, "logfdr.pdf", sep = ".")), width = width,
       height = height
     )
     heat(e, e, f, "-log FDR", ...)
@@ -210,7 +234,7 @@ enrich <- function(list1, list2, gs, outname, width = 7, height = 7, fdr = TRUE,
     e <- e[de_enrich$r_names, de_enrich$c_names, drop = F]
     # filename and heatmap
     pdf(
-      file = paste(prefix, modules, outname, "logp.pdf", sep = "."), width = width,
+      file = file.path(output, paste(nameset, modules, outname, "logp.pdf", sep = ".")), width = width,
       height = height
     )
     heat(e, e, f, "-log P", ...)
@@ -223,7 +247,7 @@ enrich <- function(list1, list2, gs, outname, width = 7, height = 7, fdr = TRUE,
   c <- c[de_enrich$r_names, de_enrich$c_names, drop = F]
   # filename and heatmap
   pdf(
-    file = paste(prefix, modules, outname, "logOR.pdf", sep = "."), width = width,
+    file = file.path(output, paste(nameset, modules, outname, "logOR.pdf", sep = ".")), width = width,
     height = height
   )
   heat(c, e, f, "Odds Ratio", ...)
