@@ -3,11 +3,11 @@
 ##
 ## Script name: 01-sample_QC.R
 ##
-## Version: 0.0.2
+## Version: 0.0.3
 ##
 ## Purpose of script: Prepare LnPlasmaPTau sample data for linear regression
 ##
-## Author: Robert B Butler III, Edward Wilson
+## Author: Robert B Butler III, Michael P Brown, Edward N Wilson III
 ##
 ## Date Created: 2023-07-04
 ##
@@ -118,7 +118,7 @@ a = fread(input)
 
 # Initial QC filters
 a = a[SampleType == "Sample"]
-a = a[!is.na(PlasmaPTau181)]
+a = a[!is.na(get(outcome))]
 a = a[RowCheck == "PASS"]
 # filter out missing diagnosis, PD people
 pd_folks = c(unique(a$Diagnosis_group[a$Diagnosis_group %like% "PD"]), "")
@@ -350,10 +350,17 @@ cols = cols[! cols %in% c("Diagnosis_group", "PIDN", "Visit", "DS1V")]
 pheno = data.frame(a[, ..cols], row.names="SampleID")
 all(colnames(prot) == rownames(pheno))
 
-# defining models
-mod = model.matrix(as.formula(paste("~", outcome)), data=pheno)
-mod0 = model.matrix(~ 1, data=pheno)
-svobj = sva(prot,mod,mod0)
+# defining models with static set of 6 SVs
+mod <- model.matrix( # this will include all covs and the outcome
+  as.formula(paste("~", paste(names(pheno), collapse=" + "))), data=pheno
+) 
+mod0 <- model.matrix( # this will drop the outcome
+  as.formula(
+    paste("~", paste(names(pheno)[names(pheno) != outcome], collapse=" + "))
+  ), 
+  data=pheno
+)
+svobj = sva(prot,mod,mod0, n.sv = 6)
 
 # extract and add to a
 svs = data.table(svobj$sv)
@@ -395,7 +402,7 @@ cv_model <- train(
 
 # # custom model npcs
 # npcs = 39
-# model_pls = mvr(PlasmaPTau181 ~ ., data=b, ncomp=npcs) 
+# model_pls = mvr(outcome ~ ., data=b, ncomp=npcs) 
 
 set.seed(123)
 cv_model_pls <- train(
@@ -537,7 +544,7 @@ fwrite(a, file = file.path(output, paste(nameset, "INTnorm.csv.gz", sep=".")))
                       # "7/3/2019", "4/9/2012"))
 # a[20:30, .(SampleID, PIDN, Visit, Date.of.draw, Visit_Consensus, DS1V)]
 # ---------------------------------------------------------------------------
-# p <- a %>% ggplot(aes(PlasmaPTau181, CSRP3.9171.11.3))
+# p <- a %>% ggplot(aes(outcome, CSRP3.9171.11.3))
 # alpha = 0.5
 # p + 
   # geom_point(aes(col = PlateId), alpha = alpha) + 
@@ -554,7 +561,7 @@ fwrite(a, file = file.path(output, paste(nameset, "INTnorm.csv.gz", sep=".")))
 # # # b = b[complete.cases(b)] # drop missing values for feature importance testing
 
 # # # # earth quick feature scoring to examine covariates
-# # # fit <- earth(PlasmaPTau181 ~ ., data=b, degree=2)
+# # # fit <- earth(outcome ~ ., data=b, degree=2)
 # # # evimp(fit, trim=FALSE) # trim=FALSE to show unused variables
 # # # p0 = ~plot(evimp(fit), main="Earth (MARS) Model Importance")
 
@@ -567,8 +574,8 @@ fwrite(a, file = file.path(output, paste(nameset, "INTnorm.csv.gz", sep=".")))
 # # # # Cross-validated model
 # # # set.seed(123)  # for reproducibility
 # # # cv_mars <- train(
-  # # # x = subset(b, select = -PlasmaPTau181),
-  # # # y = b[, PlasmaPTau181],
+  # # # x = subset(b, select = -outcome),
+  # # # y = b[, outcome],
   # # # method = "earth",
   # # # metric = "RMSE",
   # # # trControl = trainControl(method = "cv", number = 10),
