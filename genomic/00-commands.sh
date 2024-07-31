@@ -33,6 +33,14 @@ plink2 \
   --snps-only 'just-acgt' \
   --out $lrs/lrs_temp2
 
+# output lrs Apoe types
+printf "19:44908684:T:C\n19:44908822:C:T\n" > apoe_vars.txt
+plink2 \
+  --bfile $lrs/lrs_temp \
+  --extract apoe_vars.txt \
+  --recode A \
+  --out $lrs/lrs_temp
+
 # Join files
 # printf "$wgs/srs_temp2\n$lrs/lrs_temp2\n" > bfiles.txt
 plink \
@@ -58,7 +66,6 @@ plink2 \
   --out $wgs/srs-lrs_comb.filt
 
 # # apoe set # wgs seq dosn't have Apoe4 locus
-# printf "19:44908684:T:C\n19:44908822:C:T\n" > apoe_vars.txt
 # plink2 \
   # --bfile $wgs/all_temp \
   # --make-bed \
