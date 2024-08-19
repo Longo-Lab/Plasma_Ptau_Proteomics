@@ -8,7 +8,7 @@
 ## Purpose of script: GSEA based Enrichment of TREAT-AD biodomains
 ## in Ptau geneset
 ##
-## Author: Grey Cary, Robert B Butler III
+## Author: Grey Cary, Robert B Butler III, Michael P Brown
 ##
 ## Date Created: 2023-03-01
 ##

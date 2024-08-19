@@ -8,7 +8,7 @@
 ## Purpose of script: Show Correlation of Sharma_etal proteomic celltype
 ##  profiles with PlasmaPtau181 geneset
 ##
-## Author: Robert B Butler III
+## Author: Robert B Butler III, Michael P Brown
 ##
 ## Date Created: 2022-12-21
 ##

@@ -7,7 +7,7 @@
 ##
 ## Purpose of script: Prepare LnPlasmaPTau data for gene set analyses
 ##
-## Author: Robert B Butler III, Michael Peter Brown
+## Author: Robert B Butler III, Michael P Brown
 ##
 ## Date Created: 2022-12-21
 ##

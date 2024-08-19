@@ -3,7 +3,7 @@
 ##
 ## Script name: 01-sample_QC.R
 ##
-## Version: 0.0.3
+## Version: 0.0.7
 ##
 ## Purpose of script: Prepare LnPlasmaPTau sample data for linear regression
 ##
@@ -67,6 +67,24 @@ option_list <- list(
     help = "File path to output directory [default: %default]"
   ),
   make_option(
+    c("-p", "--prots"),
+    type = "character",
+    default = "../prot_names.txt",
+    help = "File path to prots file [default: %default]"
+  ),
+  make_option(
+    c("-v", "--covs"),
+    type = "character",
+    default = "",
+    help = "Terminal input of covariates in comma-separated format [default: %default]"
+  ),
+  make_option(
+    c("-m", "--pcs"),
+    type = "character",
+    default = "",
+    help = "File path to PCs csv [default: %default]"
+  ),
+  make_option(
     c("-c", "--outcome"),
     type = "character",
     help = "String specifying the column in data containing the outcome variable [required]"     
@@ -80,15 +98,14 @@ option_list <- list(
 
 args_list <- parse_args(OptionParser(option_list = option_list))
 
-# Nameset default case
-if(is.null(args_list$nameset)){
-  args_list$nameset <- nameset_default(args_list$input)
-}
 
 # read in fields
 fields <- c(
   "input",
   "output",
+  "prots",
+  "covs",
+  "pcs",
   "outcome",
   "nameset"
 )
@@ -106,144 +123,150 @@ for (field in fields) {
   print(paste0(field, ": ", get(field)))
 }
 
-# variables
-first_prot = "CRYBB2.10000.28.3"                                              # <------------ Do we need an option for range of prots?
-last_prot = "IRF6.9999.1.3"
+# Nameset default case
+if(is.null(args_list$nameset)){
+  args_list$nameset <- nameset_default(args_list$input)
+}
 
+# check outpath status
+if (!dir.exists(output)) {
+  dir.create(output, recursive = TRUE)
+}
+
+# variables
+covs <- strsplit(covs,",")[[1]]
+prots <- readLines(prots)
+first_prot = prots[1]                                             
+last_prot = prots[length(prots)]
+
+qc_cols <- c(
+  "PIDN", "SampleID", "ADRC_ID", "Visit", "Visit_Consensus", "ConnectivityZscore",
+  "Diagnosis_group", "Date.of.draw", "DS1V"
+)
 
 # Main -----------------------
 # So, the final INTnorm dataset:
-# a = fread('../dataProt_SS-205063.hybNorm.medNormInt.plateScale.calibrate.anmlQC.qcCheck.anmlSMP_ADRC_Feb2021_plasmaptauadded_Ted.csv')
-a = fread(input)
+a <- fread(input)
 
-# Initial QC filters
-a = a[SampleType == "Sample"]
+# # dealing with duplicated column names
+# drops <- which(duplicated(names(a)[!names(a) %in% prots]))
+# a[, (drops) := NULL]
+
+# Map in PCs assumes your primary data table exists 
+if (pcs != "") {
+  print(sprintf("Reading PCs for inclusion from %s", pcs))
+  x <- fread(pcs, colClasses = c(PIDN = "character"))
+  a <- merge(a, x, by = "PIDN")
+  covs <- c(covs, names(a)[names(a) %like% "^PC\\d{1,2}$"]) # flexible for PCs
+}
+# no longer needed
+# # Hardcoded add LRS_apoe types, recode existing APOE as factor
+# b <- fread("../genomic/lrs_apoe.txt", colClasses = c("character", "factor"))
+# a <- merge(a, b, by.x = "PIDN", by.y = "IID", all.x = TRUE)
+# a[, APOE := recode_factor(APOE, 
+  # `22` = "e22",
+  # `23` = "e23",
+  # `33` = "e33",
+  # `34` = "e34",
+  # `44` = "e44",
+  # `24` = "e24"
+# )]
+# a[is.na(APOE), APOE := LRS_APOE]
+
+# # Initial QC filters
+# a = a[SampleType == "Sample"]
+# a = a[Study != "Control"]
+# a = a[RowCheck == "PASS"]
 a = a[!is.na(get(outcome))]
-a = a[RowCheck == "PASS"]
-# filter out missing diagnosis, PD people
-pd_folks = c(unique(a$Diagnosis_group[a$Diagnosis_group %like% "PD"]), "")
-lbd_folks = c(unique(a$Diagnosis_group[a$Diagnosis_group %like% "LBD"]), "")
-a = a[!Diagnosis_group %in% c(pd_folks, lbd_folks)]
-# # Storage days has a few NAs
-# a = a[!is.na(Storage_days)]
-# recode Subarray to letters to avoid confusing as quantitative
-a[, Subarray := recode(Subarray, `1`="A", `2`="B", `3`="C", `4`="D", `5`="E", 
-                       `6`="F", `7`="G", `8`="H")]
-# # all age, gender, study, diagnosis present
-# a[, .N, by=Study]
-# a[, .N, by=Gender]
-# a[, .N, by=Age]
-# a[, .N, by=Diagnosis_group]
+# # filter out missing diagnosis, PD people
+# pd_folks = c(unique(a$Diagnosis_group[a$Diagnosis_group %like% "PD"]), "")
+# lbd_folks = c(unique(a$Diagnosis_group[a$Diagnosis_group %like% "LBD"]), "")
+# a = a[!Diagnosis_group %in% c(pd_folks, lbd_folks)]
+# # # Storage days has a few NAs
+# # recode Subarray to letters to avoid confusing as quantitative
+# a[, Subarray := recode(Subarray, `1`="A", `2`="B", `3`="C", `4`="D", `5`="E", 
+#                        `6`="F", `7`="G", `8`="H")]
 
-# checking duplicate samples ------------------------------------------------
-# first duplicates by SampleID
-cols = c(names(a)[c(3:11, 14:18)], "ConnectivityZscore")
-a[duplicated(SampleID) | duplicated(SampleID, fromLast=T), ..cols]
-# same 13 duplicates regardless, have two PTau181 measures though
-# mostly appear to be duplicates across studies or across plates, internal controls
-# so select a random one for each sampleID
-set.seed(123)
-a = a[a[ , .I[sample(.N,1)] , by = SampleID]$V1]
+# # checking duplicate samples ------------------------------------------------
+# # first duplicates by SampleID
+# cols = c(qc_cols, covs)
+# a[duplicated(SampleID) | duplicated(SampleID, fromLast=T), ..cols]
+# # same 13 duplicates regardless, have two PTau181 measures though
+# # mostly appear to be duplicates across studies or across plates, internal controls
+# # so select a random one for each sampleID
+# set.seed(123)
+# a = a[a[ , .I[sample(.N,1)] , by = SampleID]$V1]
 
-# next duplicate paricipants at the same visit 
-a[duplicated(a[, .(PIDN, Visit)]) | duplicated(a[, .(PIDN, Visit)], fromLast=T), ..cols]
-# 6 samples show up
+# # next duplicate paricipants at the same visit 
+# a[duplicated(a[, .(PIDN, Visit)]) | duplicated(a[, .(PIDN, Visit)], fromLast=T), ..cols]
+# # 6 samples show up
 
-# 1 is a genuine duplicate with the same date of draw, Study, PlateID
-a[duplicated(a[, .(PIDN, Visit, Date.of.draw)]) | duplicated(a[, .(PIDN, Visit, Date.of.draw)], fromLast=T), ..cols]
-# randomly drop one of the duplicates
-set.seed(123)
-a = a[a[ , .I[sample(.N,1)] , by =c("PIDN", "Visit", "Date.of.draw")]$V1]
+# # 1 is a genuine duplicate with the same date of draw, Study, PlateID
+# a[duplicated(a[, .(PIDN, Visit, Date.of.draw)]) | duplicated(a[, .(PIDN, Visit, Date.of.draw)], fromLast=T), ..cols]
+# # randomly drop one of the duplicates
+# set.seed(123)
+# a = a[a[ , .I[sample(.N,1)] , by =c("PIDN", "Visit", "Date.of.draw")]$V1]
 
-# the remaining 5 have differing draw dates, suggesting their Visit and 
-# Visit_Consensus are wrong. Convert to Date.of.draw to date field to sort
-a[, Date.of.draw := as.Date(Date.of.draw, format="%m/%d/%Y")]
-dups = a[duplicated(a[, .(PIDN, Visit)]) , PIDN]
-a[PIDN %in% dups, ..cols][order(PIDN, Date.of.draw)]
-# all are part of the "Wave 2" group from Wagner that have what looks like a 
-# 6-month follow-up or something similar. We can convert to Days since first 
-# visit to account for non-exact visit spacing. 
+# # the remaining 5 have differing draw dates, suggesting their Visit and 
+# # Visit_Consensus are wrong. Convert to Date.of.draw to date field to sort
+# a[, Date.of.draw := as.Date(Date.of.draw, format="%m/%d/%Y")]
+# dups = a[duplicated(a[, .(PIDN, Visit)]) , PIDN]
+# a[PIDN %in% dups, ..cols][order(PIDN, Date.of.draw)]
+# # all are part of the "Wave 2" group from Wagner that have what looks like a 
+# # 6-month follow-up or something similar. We can convert to Days since first 
+# # visit to account for non-exact visit spacing. 
 
-# First, reorder visits to be correct for all PIDNs with a Wave2.
-wags = a[SampleID %like% "Wave 2", PIDN] 
-a[PIDN %in% wags, ..cols][order(PIDN, Date.of.draw)]
-a[PIDN %in% wags, Visit := frank(Date.of.draw, ties.method="dense"), by=c("PIDN")]
-# note this does not check the ordering on non-Wave2 participants
-all(a[order(PIDN, Date.of.draw), Visit] == a[order(PIDN, Visit), Visit])
-# there is another...    misordered sample
-x = !a[order(PIDN, Date.of.draw), Visit] == a[order(PIDN, Visit), Visit]
-ords = unique(a[order(PIDN, Visit)][x, PIDN])
-a[PIDN %in% ords, ..cols][order(PIDN, Date.of.draw)]
-# definitely misordered by Date.of.draw... 
-# should update metadata, but in the mean time reorder by date
-a[PIDN %in% ords, Visit := frank(Date.of.draw, ties.method="dense"), by=c("PIDN")]
-all(a[order(PIDN, Date.of.draw), Visit] == a[order(PIDN, Visit), Visit])
+# # First, reorder visits to be correct for all PIDNs
+# # a[order(PIDN, Date.of.draw), ..cols]
+# a[, Visit := frank(Date.of.draw, ties.method="first"), by=c("PIDN")]
+# # definitely misordered by Date.of.draw... 
+# # should update metadata, but in the mean time reorder by date
+# all(a[order(PIDN, Date.of.draw), Visit] == a[order(PIDN, Visit), Visit])
 
-# converting timescales to days since baseline visit -------------------------
-# convert Date.of.draw to Days since 1st visit
-######################### Days since 1st visit == "DS1V" ######################
-a[, DS1V := Date.of.draw - Date.of.draw[Visit == 1], .(PIDN)]
-a[, DS1V := as.numeric(DS1V)]
+# # converting timescales to days since baseline visit -------------------------
+# # convert Date.of.draw to Days since 1st visit
+# a[, DS1V := Date.of.draw - Date.of.draw[Visit == 1], .(PIDN)]
+# a[, DS1V := as.numeric(DS1V)]
+cols = c(qc_cols, covs)
 
-# Appears there are a number of folks with date issues resulting in NA(n = 18)
-cols = c(names(a)[c(3:11, 14:18)], "ConnectivityZscore", "DS1V")
-a[is.na(DS1V), ..cols]
-a[PIDN %in% unique(a[is.na(DS1V), PIDN]), ..cols]
+########## Verify this shouldn't error any longer i.e. no is.na(DS1V) or is.na(Date.of.draw)
+# # # Appears there are a number of folks with date issues resulting in NA(n = 18)
+# # a[is.na(DS1V), ..cols]
+# # a[PIDN %in% unique(a[is.na(DS1V), PIDN]), ..cols]
 
-# Of those, there are 4 with Visit_Consensus "Baseline", but NA draw dates
-# Those are easily converted to DS1V = 0
-a[is.na(Date.of.draw) & Visit_Consensus == "Baseline", DS1V := 0]
+# # # Of those, there are 4 with Visit_Consensus "Baseline", but NA draw dates
+# # # Those are easily converted to DS1V = 0
+# # a[is.na(Date.of.draw) & Visit_Consensus == "Baseline", DS1V := 0]
 
-# 7 remain that apppear to be visits without a baseline. 
-# for this analysis, I will calculate their DS1V with Visit 2
-a[is.na(DS1V), DS1V := Date.of.draw - Date.of.draw[Visit == 2], .(PIDN)]
-# NOTE, FOR THESE 7, THIS IS NOT THEIR BASELINE VISIT, SO THEY CANNOT BE EASILY 
-# LINED UP WITH OTHER DATASETS THE ARDC HAS (i.e. IMAGING)
-# a[PIDN %in% a[DS1V == 0 & Visit == 2, PIDN], ..cols]
+# # 7 remain that apppear to be visits without a baseline. 
+# # for this analysis, I will calculate their DS1V with Visit 2
+# a[is.na(DS1V), DS1V := Date.of.draw - Date.of.draw[Visit == 2], .(PIDN)]
+# # NOTE, FOR THESE 7, THIS IS NOT THEIR BASELINE VISIT, SO THEY CANNOT BE EASILY 
+# # LINED UP WITH OTHER DATASETS THE ARDC HAS (i.e. IMAGING)
+# # a[PIDN %in% a[DS1V == 0 & Visit == 2, PIDN], ..cols]
 
 # Also of note, the Visit years are very much not a year apart for several PIDNs
 # i.e. one had >2300 days between their first and second visits
 
-# drop unnecessary columns
-a[, c("SampleType", "SampleId", "ADRC_ID", "Visit_Consensus", 
-      "Diagnosis_consensus", "Group", "Date.of.draw", "Individual_ID", 
-      "PlatePosition", "SlideId", "SampleId.1", "SampleType.1", 
-      "PercentDilution", "SampleMatrix", "Barcode", "Barcode2d", "SampleName", 
-      "SampleNotes", "AliquotingNotes", "SampleDescription", "AssayNotes", 
-      "TimePoint", "ExtIdentifier", "SsfExtId", "SampleGroup", "SiteId", 
-      "SubjectID", "CLI", "RMA", "RowCheck", "NormScale_20", "NormScale_0_005", 
-      "NormScale_0_5", "ANMLFractionUsed_20", "ANMLFractionUsed_0_005", 
-      "ANMLFractionUsed_0_5", "V64") := NULL]
-a[, c("SampleType", "SampleId") := NULL]
-a[, c("svd1", "svd2", "svd3", "svd4", "svd5") := NULL] # if generating new svs
-
-# reorder for DS1V
-vcol = grep("Visit", names(a))
-setcolorder(a, c(names(a)[1:vcol], "DS1V", names(a)[(vcol + 1):(ncol(a) - 1)]))
-
 # Sample outlier analysis --------------------------------------------------
 # check ConnectivityZscore for extreme outliers:
-cols = c(names(a)[1:(grep(first_prot, names(a)) - 1)])
 a[abs(ConnectivityZscore) > 3, ..cols]
 
 # plots connectivity histogram
 p1 = ggplot(a, aes(x=ConnectivityZscore)) + geom_histogram()
-ggsave(paste(nameset, "ConnectivityZscore.pdf", sep = "."), p1, useDingbats = F, path = output)
+ggsave(
+  paste(nameset, "ConnectivityZscore.pdf", sep = "."), 
+  p1, 
+  useDingbats = F, 
+  path = output
+)
 
 # One sample had an extreme Z-score, less than -23. Participant's baseline visit
 # was in a normal range, and there was no other metadata explaining the outlier.
 # The rest included some samples with z in the +/- 3-4 range, but not notable
 
 # fetch the protein columns for plotting
-if (length(grep(first_prot, names(a))) + length(grep(last_prot, names(a))) > 2){
-  print("WARNING: the first and last protein names returned multiple columns!.n",
-        "Doublecheck all the protein columns are in a block and included.n")
-  cols = names(a)[grep(first_prot, names(a))[1]:last(grep(last_prot, names(a)))]
-  cols = c("SampleID", cols)
-} else {
-  cols = names(a)[grep(first_prot, names(a)):grep(last_prot, names(a))]
-  cols = c("SampleID", cols)
-}
+cols = c("SampleID", prots) 
 b = a[, ..cols]
 
 # Poisson Distance Pairwise
@@ -321,75 +344,63 @@ dev.off()
 drop = a[abs(ConnectivityZscore) > 10, SampleID]
 a = a[!SampleID %in% drop]
 
-# drop ConnectivityZscore for subsequent analysis 
-a[, "ConnectivityZscore" := NULL]
-
 
 # Setup for baseline visit only analysis ---------------------------
 # drop all samples with DS1V != 0
 a = a[DS1V == 0]
-# cols = c(names(a)[2:26], "DS1V") # if including existing svs
-cols = c(names(a)[1:(grep(first_prot, names(a)) - 1)])
 
-# checking for missed dulicates or bad visit labeling
-a[duplicated(PIDN) | Visit > 1, ..cols]
+# checking for missed duplicates or bad visit labeling
+a[duplicated(PIDN) | Visit > 1, ..qc_cols]
 
 # Inverse rank normalization (INT) to z-scale
-cols = names(a)[grep(first_prot, names(a)):grep(last_prot, names(a))]
-cols = c(outcome, cols)
+cols = c(outcome, prots)
 a[, (cols) := lapply(.SD, RankNorm), .SDcols=cols]
 
 # generate surrogate variables ---------------------------------------
 # matrix of proteins
-cols = c("SampleID", names(a)[grep(first_prot, names(a)):grep(last_prot, names(a))])
-prot = t(as.matrix(a[, ..cols], rownames="SampleID"))
+cols <- c("SampleID", prots)
+prot <- t(as.matrix(a[, ..cols], rownames = "SampleID"))
 
 # matrix of phenotypes to regress
-cols = c(names(a)[1:(grep(first_prot, names(a)) - 1)])
-cols = cols[! cols %in% c("Diagnosis_group", "PIDN", "Visit", "DS1V")]
-pheno = data.frame(a[, ..cols], row.names="SampleID")
+cols <- c("SampleID", outcome, covs)
+pheno <- data.frame(a[, ..cols], row.names = "SampleID")
 all(colnames(prot) == rownames(pheno))
 
 # defining models with static set of 6 SVs
 mod <- model.matrix( # this will include all covs and the outcome
-  as.formula(paste("~", paste(names(pheno), collapse=" + "))), data=pheno
+  as.formula(paste("~", paste(names(pheno), collapse=" + "))), 
+  data = pheno
 ) 
 mod0 <- model.matrix( # this will drop the outcome
   as.formula(
-    paste("~", paste(names(pheno)[names(pheno) != outcome], collapse=" + "))
+    paste("~", paste(names(pheno)[names(pheno) != outcome], collapse = " + "))
   ), 
-  data=pheno
+  data = pheno
 )
-svobj = sva(prot,mod,mod0, n.sv = 6)
+svobj <- sva(prot, mod, mod0, n.sv = 6)
 
 # extract and add to a
-svs = data.table(svobj$sv)
+svs <- data.table(svobj$sv)
 setnames(svs, gsub("V", "sv", names(svs)))
-a = cbind(a, svs)
+a <- cbind(a, svs)
 
-# reorder this mess
-vcol = grep(first_prot, names(a))
-setcolorder(a, c(names(a)[1:(vcol - 1)], 
-                 paste0("sv", seq(svobj$n.sv)), 
-                 names(a)[(vcol):(ncol(a) - svobj$n.sv)]))
+# add to covs 
+covs <- c(covs, names(svs))
 
 # GLM based feature selection -----------------------------------------
-# examined potential covariates
-cols = c(names(a)[2:(grep(first_prot, names(a)) - 1)])
-cols = cols[! cols %in% c("Diagnosis_group", "PIDN", "Visit", "DS1V")]
-b = a[, ..cols]
-b = b[complete.cases(b)] # drop missing values for feature importance testing
+# examined potential covariates (use pheno data.frame above)
+# drop missing values for feature importance testing
+pheno <- data.frame(a[, ..cols], row.names = "SampleID")
+pheno <- pheno[complete.cases(pheno),] 
 
 # include all possible main effects
-model = glm(as.formula(paste(outcome, "~", ".")), data=b) 
-# PlateRunDate & ScannerID cannot be fit to a glm model
-b[, c("PlateRunDate", "ScannerID") := NULL ]
+model = glm(as.formula(paste(outcome, "~", ".")), data = pheno) 
 
 # simple training
 set.seed(123)
 cv_model <- train(
   as.formula(paste(outcome, "~", ".")), 
-  data = b, 
+  data = pheno, 
   method = "glm",
   trControl = trainControl(method = "cv", number = 50)
 )
@@ -407,7 +418,7 @@ cv_model <- train(
 set.seed(123)
 cv_model_pls <- train(
   as.formula(paste(outcome, "~", ".")), 
-  data = b, 
+  data = pheno, 
   method = "pls",
   trControl = trainControl(method = "cv", number = 10),
   preProcess = c("zv", "center", "scale"),
@@ -437,12 +448,12 @@ p2 <- vip::vip(cv_model_pls, geom="point", num_features = 50, bar = FALSE) +
 
 # Random Forest feature scoring ---------------------------------------
 # number of features
-n_features <- ncol(b) - 1
+n_features <- ncol(pheno) - 1
 
 # train a default random forest model
 rf1 <- ranger(
   as.formula(paste(outcome, "~", ".")), 
-  data = b,
+  data = pheno,
   mtry = floor(n_features / 3),
   respect.unordered.factors = "order"
 )
@@ -463,7 +474,7 @@ for(i in seq_len(nrow(hyper_grid))) {
   # fit model for ith hyperparameter combination
   fit.rf <- ranger(
     formula = as.formula(paste(outcome, "~", ".")), 
-    data = b,
+    data = pheno,
     mtry            = hyper_grid$mtry[i],
     min.node.size   = hyper_grid$min.node.size[i],
     replace         = hyper_grid$replace[i],
@@ -486,7 +497,7 @@ top = hyper_grid %>%
 # re-run model with impurity-based variable importance
 rf_impurity <- ranger(
   formula = as.formula(paste(outcome, "~", ".")), 
-  data = b,
+  data = pheno,
   num.trees = 2000,
   mtry = top$mtry[1],
   min.node.size = top$min.node.size[1],
@@ -500,7 +511,7 @@ rf_impurity <- ranger(
 # re-run model with permutation-based variable importance
 rf_permutation <- ranger(
   formula = as.formula(paste(outcome, "~", ".")), 
-  data = b,
+  data = pheno,
   num.trees = 2000,
   mtry = top$mtry[1],
   min.node.size = top$min.node.size[1],
@@ -523,16 +534,20 @@ p4 <- vip::vip(rf_permutation, geom="point", num_features = 50, bar = FALSE) +
 # AACCCCCC
 # BBCCCCCC
 # "
-pdf(file = file.path(output, paste(nameset, "feature_importance.pdf", sep=".")), width=11, height=11)
+pdf(
+  file = file.path(output, paste(nameset, "feature_importance.pdf", sep=".")), 
+  width = 11, 
+  height = 11
+)
 p1 + p2 + p3 + p4
 dev.off()
 
 # Post-covariate determination ----------------------------------------------
-# PlateRunDate & ScannerID cannot be fit to a glm model
-a[, c("PlateRunDate", "ScannerID") := NULL ]
-
-
-fwrite(a, file = file.path(output, paste(nameset, "INTnorm.csv.gz", sep=".")))
+cols = c(qc_cols, covs, outcome, prots)
+fwrite(
+  a[, ..cols], 
+  file = file.path(output, paste(nameset, "INTnorm.csv.gz", sep="."))
+)
 
 
 

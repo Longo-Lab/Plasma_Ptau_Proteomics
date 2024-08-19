@@ -8,7 +8,7 @@
 ## Purpose of script: calculate correlation of plasma ptau with SomaLogic plasma
 ## proteomic levels
 ##
-## Author: Edward Wilson, Robert B Butler III
+## Author: Edward Wilson, Robert B Butler III, Michael P Brown
 ##
 ## Date Created: 2023-08-25
 ##
@@ -63,6 +63,18 @@ option_list <- list(
     help = "File path to output directory [default: %default]"
   ),
   make_option(
+    c("-p", "--prots"),
+    type = "character",
+    default = "../prot_names.txt",
+    help = "File path to prots file [default: %default]"
+  ),
+  make_option(
+    c("-v", "--covs"),
+    type = "character",
+    default = "",
+    help = "Terminal input of covariates in comma-separated format [default: %default]"
+  ),
+  make_option(
     c("-n", "--nameset"),
     type = "character",
     help = "Name of project [default: Nameset of input]"
@@ -85,6 +97,8 @@ if(is.null(args_list$nameset)){
 fields <- c(
   "input",
   "output",
+  "prots",
+  "covs",
   "nameset",
   "outcome"
 )
@@ -103,9 +117,10 @@ for (field in fields) {
 }
 
 # variables
-first_prot = "CRYBB2.10000.28.3"                                              # <------------ Do we need an option for range of prots?
-last_prot = "IRF6.9999.1.3"
-
+covs = strsplit(covs, ",")[[1]]
+prots <- readLines(prots)
+first_prot = prots[1]                                             
+last_prot = prots[length(prots)]
 
 # Functions ----------------------------------------------------------------
 #' Generalized linear model based on a flexible formula
@@ -167,18 +182,19 @@ dat = recode_dummies(dat, "Storage", keep=c("Negative.20C.LowVolume"))
 
 # variables to drop from the model (based on feature importance): 
 # best 2of3 (cv, pls, rf; either rf-impur or rf-perm stat can count as only one)
-drops = c("Diagnosis_group", "PIDN", "Visit", "DS1V", "SampleID", 
-          outcome, "PlateId", "Subarray", "Freeze.Thaw", "Storage", 
-          "Time.To.Ship", "sv5", "sv10", "sv11", "sv16", "sv21", "sv22", "sv23",
-          "sv25", "sv29", "sv30", "sv32", "sv33", "sv34", "sv35", "sv36", "sv37",
-          "sv38", "sv39")
+#drops = c("Diagnosis_group", "PIDN", "Visit", "DS1V", "SampleID", 
+#          outcome, "PlateId", "Subarray", "Freeze.Thaw", "Storage", 
+#          "Time.To.Ship", "sv5", "sv10", "sv11", "sv16", "sv21", "sv22", "sv23",
+#          "sv25", "sv29", "sv30", "sv32", "sv33", "sv34", "sv35", "sv36", "sv37",
+#          "sv38", "sv39")
 # drops = c("Diagnosis_group", "PIDN", "Visit", "DS1V", "SampleID", 
           # "PlasmaPTau181")
 
 # make covariates
-cols = c(names(dat)[2:(grep(first_prot, names(dat)) - 1)])
-cols = cols[! cols %in% drops]
-print(paste("Running covs:", paste(cols, collapse=", ")))
+#cols = c(names(dat)[2:(grep(first_prot, names(dat)) - 1)])
+#cols = cols[! cols %in% drops]
+#print(paste("Running covs:", paste(cols, collapse=", ")))
+print(paste("Running covs:", paste(covs, collapse=", ")))
 
 # make out table
 outs = outcome            # define dependent variables by column names                                                                
@@ -187,7 +203,7 @@ exps = c(names(dat)[grep(first_prot, names(dat))[1]:last(grep(last_prot, names(d
 dt1 = CJ(dx=outs, ix=exps)
 
 # fast run function
-dt1[, c("beta", "se", "t stat", "pval", "nobs") := get_linreg(dat, dx, ix, cols), by=.I]
+dt1[, c("beta", "se", "t stat", "pval", "nobs") := get_linreg(dat, dx, ix, covs), by=.I]
 
 # remove Xs needed for formula
 dt1[startsWith(ix, "X."), ix := gsub("^X.", ".", ix)]

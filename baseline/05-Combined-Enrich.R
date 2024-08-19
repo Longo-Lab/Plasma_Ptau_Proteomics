@@ -53,7 +53,7 @@ option_list <- list(
   make_option(
     c("-m", "--modules"),
     type = "character",
-    help = "Module script set desired to run"
+    help = "Name of module script set desired to run"
   ),
   make_option(
     c("-i", "--input"),
