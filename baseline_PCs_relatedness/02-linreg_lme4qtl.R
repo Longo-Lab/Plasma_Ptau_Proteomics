@@ -3,7 +3,7 @@
 #'
 #' Script name: 02-linreg_glm.R
 #'
-#' Version: 0.0.3
+#' Version: 0.0.4
 #'
 #' Purpose of script: calculate correlation of plasma ptau with SomaLogic plasma
 #' proteomic levels
@@ -61,16 +61,34 @@ option_list <- list(
     help = "File path to DE input file (*.csv.gz)[default: %default]"
   ),
   make_option(
+    c("-o", "--output"),
+    type = "character",
+    default = ".",
+    help = "File path to output directory [default: %default]"
+  ),
+  make_option(
+    c("-p", "--prots"),
+    type = "character",
+    default = "../prot_names.txt",
+    help = "File path to prots file [default: %default]"
+  ),
+  make_option(
     c("-r", "--ref"),
     type = "character",
     default = "../genomic/mypcrelate.rds",
     help = "File path to directory of reference data [default: %default]"
   ),
   make_option(
-    c("-o", "--output"),
+    c("-v", "--covs"),
     type = "character",
-    default = ".",
-    help = "File path to output directory [default: %default]"
+    default = "",
+    help = "Terminal input of covariates in comma-separated format [default: %default]"
+  ),
+  make_option(
+    c("-d", "--recodes"),
+    type = "character",
+    default = "",
+    help = "Recode covariates in comma-separated format and pipe between covs [default: %default]"
   ),
   make_option(
     c("-n", "--nameset"),
@@ -94,8 +112,11 @@ if (is.null(args_list$nameset)) {
 # read in fields
 fields <- c(
   "input",
-  "ref",
   "output",
+  "prots",
+  "ref",
+  "covs",
+  "recodes",
   "nameset",
   "outcome"
 )
@@ -114,9 +135,9 @@ for (field in fields) {
 }
 
 # variables
-first_prot <- "CRYBB2.10000.28.3"
-last_prot <- "IRF6.9999.1.3"
-
+covs = strsplit(covs, ",")[[1]]
+prots <- readLines(prots)
+recodes <- strsplit(unlist(strsplit(recodes, "\\|")), ",")
 
 # Functions ----------------------------------------------------------------
 #' Generalized linear model based on a flexible formula
@@ -129,13 +150,13 @@ last_prot <- "IRF6.9999.1.3"
 #' @param mat dsCMatrix a Generalized relatedness matrix
 #'
 #' @returns A list: 'Estimate' (beta), 'Std. Error' (se), 't value' (test statistic), 'Pr(>Chisq)' (p-value), 'nobs' (number of observations)
-get_linreg <- function(dat, m0, outcome, exposure, covs = c(), mat) {
+get_linreg <- function(dat, outcome, exposure, covs = c(), mat) {
   m <- relmatLmer( # remember in the formula, exposure must come first after ~
     as.formula(paste(outcome, "~", paste(c(exposure, covs, "(1|PIDN)"), collapse = " + "))),
     data = dat,
     relmat = list(PIDN = mat)
   )
-  t <- anova(m0, m)
+  t <- suppressWarnings(anova(m0, m))
   a <- summary(m)
   return(as.list(c(a$coefficients[2, ], t$`Pr(>Chisq)`[2], nobs = nobs(m))))
 }
@@ -169,57 +190,46 @@ recode_dummies <- function(dat, dcol, keep = c()) {
 
 # Main -------------------------
 dat <- fread(input)
-# dat$Diagnosis_group = factor(dat$Diagnosis_group, c("HC", "SCI", "MCI", "MCI-AD", "AD", "LBD"))
 names(dat) <- make.names(names(dat))
+prots <- make.names(prots)
 
 # add in single category columns with feature importance
 # PlateId was important, but P0028449, P0028565, P0028437, P0028430, P0028452, P0028448 were top30 in either glmcross-validated or plr estimates
-dat <- recode_dummies(dat, "PlateId", keep = c(
-  "P0028449", "P0028565", "P0028437",
-  "P0028430", "P0028452", "P0028448"
-))
+# dat = recode_dummies(dat, "PlateId", keep=c("P0028451", "P0028463", "P0028462", "P0028438", "P0028430", "P0028437"))
+lapply(recodes, function(i){
+  if(i[1] %in% covs){
+    dat <- recode_dummies(dat, 
+    dcol = i[1],
+    keep = i[2:length(i)]
+    )
+  }
+})
+
 # # Subarray was not very important, but three showed up in top 30 for GLM CV
 # dat = recode_dummies(dat, "Subarray", keep=c("G", "F", "H"))
 # Storage did not show up in Rf top30, but "Negative.20C.LowVolume" came up in both GLM CV and PLS
-dat <- recode_dummies(dat, "Storage", keep = c("Negative.20C.LowVolume"))
+# dat <- recode_dummies(dat, "Storage", keep = c("Negative.20C.LowVolume"))
 
 
-# variables to drop from the model (based on feature importance):
-# best 2of3 (cv, pls, rf; either rf-impur or rf-perm stat can count as only one)
-drops <- c(
-  "Diagnosis_group", "PIDN", "Visit", "DS1V", "SampleID",
-  "PlasmaPTau181", "PlateId", "Subarray", "Freeze.Thaw", "Storage",
-  "Time.To.Ship", "sv5", "sv10", "sv11", "sv16", "sv21", "sv22", "sv23",
-  "sv25", "sv29", "sv30", "sv32", "sv33", "sv34", "sv35", "sv36", "sv37",
-  "sv38", "sv39"
-)
-# drops = c("Diagnosis_group", "PIDN", "Visit", "DS1V", "SampleID",
-# "PlasmaPTau181")
-
-# make covariates
-cols <- c(names(dat)[2:(grep(first_prot, names(dat)) - 1)])
-cols <- cols[!cols %in% drops]
-print(paste("Running covs:", paste(cols, collapse = ", ")))
+# list covariates
+print(paste("Running covs:", paste(covs, collapse = ", ")))
 
 # read in and generate the relatedness matrix
 pcr <- readRDS(file.path(ref))
-grm <- GENESIS::pcrelateToMatrix(pcr, thresh = 2^(-11 / 2), scaleKin = 2)
+grm <- GENESIS::pcrelateToMatrix(pcr, thresh = 2^(-11/2), scaleKin = 2)
+
+# make output table
+dt1 <- CJ(dx = outcome, ix = prots)
 
 # generate the baseline model w/o proteins
 m0 <- relmatLmer(
-  as.formula(paste(outcome, "~", paste(c(covs, "(1|PIDN)"), collapse = " + "))),
+  as.formula(paste(dt1$dx, "~", paste(c(covs, "(1|PIDN)"), collapse = " + "))),
   data = dat,
-  relmat = list(PIDN = mat)
+  relmat = list(PIDN = grm)
 )
 
-# make output table
-outs <- outcome # define dependent variables by column names
-# type them out or specify index range, or by regex)
-exps <- c(names(dat)[grep(first_prot, names(dat))[1]:last(grep(last_prot, names(dat)))]) # same with independent variables
-dt1 <- CJ(dx = outs, ix = exps)
-
 # fast run function
-dt1[, c("beta", "se", "t stat", "pval", "nobs") := get_linreg(dat, m0, dx, ix, cols, grm), by = .I]
+dt1[, c("beta", "se", "t stat", "pval", "nobs") := get_linreg(dat, dx, ix, covs, grm), by = .I]
 
 # remove Xs needed for formula
 dt1[startsWith(ix, "X."), ix := gsub("^X.", ".", ix)]
