@@ -3,7 +3,7 @@
 #'
 #' Script name: biodomain_TMT-AD.R
 #'
-#' Version: 0.0.2
+#' Version: 0.0.3
 #'
 #' Purpose of script: Functions using TMT-AD modules
 #'
@@ -17,6 +17,7 @@
 #' ---------------------------
 #'
 #' Notes:
+#'   v0.0.3 - adding symbol lookup table & title (scripts #8)
 #'   v0.0.2 - updated for relative paths
 #'   
 #'
@@ -30,15 +31,27 @@ library(circlize)
 library(RColorBrewer)
 
 #' ---------------------------
+# global variables
+target <- "TMT-AD.113.one2one.Human.Genes.txt"
 
-heat = function(mat, pval, int, name, ...) {
-  # plot heatmap of overlaps colored by value, and sized by overlap (given matrices, name)
-  # mat: matrix of heatmap values (fdr, p-val, or odds.ratio)
-  # pval: matched matrix of fdr values, to bold significant circles
-  # int: matched matrix of Jaccard indexes for intersection sizes
-  # name: heatscale name for plot (fdr, p-val, or odds.ratio)
-  # returns a draw graph call
+# dimensions for saving figures
+w = 24
+dh = 0
+h1 = 6
 
+
+#' ---------------------------
+
+#' ComplexHeatmap template for this target
+#' overlaps colored by value, and sized by overlap (given matrices, name)
+#'
+#' @param mat matrix of heatmap values (fdr, p-val, or odds.ratio)
+#' @param pval matched matrix of fdr values, to bold significant circles
+#' @param int matched matrix of Jaccard indexes for intersection sizes
+#' @param name heatscale name for plot (fdr, p-val, or odds.ratio)
+#'
+#' @return a draw graph call
+heat = function(mat, pval, int, name, title, ...) {
   # resolve Inf to real number (round) and check for NAs
   mat[is.infinite(mat)] = -log10(2.225074e-308)
   pval[is.infinite(pval)] = -log10(2.225074e-308)
@@ -56,24 +69,42 @@ heat = function(mat, pval, int, name, ...) {
   buffer[is.nan(buffer)] <- 0
   dot_scalar = unit(1.5, "cm")
   # heatmap plot 
-  a = Heatmap(mat, cluster_rows=F, cluster_columns=F, na_col="#FFFFFF", 
-              col=col_fun, name=name, column_names_rot=60, row_names_side="left",
-              # top_annotation=ha, bottom_annotation=hb, column_split=ad_anno, 
-              # column_gap = unit(5, "mm"), 
-              # column_title_gp = gpar(fontsize = 20, fontface = "bold"),
-              rect_gp=gpar(type="none"), 
-              cell_fun=function(j, i, x, y, width, height, fill) { 
-                grid.circle(x=x, y=y, r=(buffer[i, j] * dot_scalar), 
-                            gp=gpar(fill=col_fun(mat[i, j]), 
-                                    col=ifelse(pval[i, j] < -log10(0.05), NA, 
-                                               "black")))
-                if (pval[i, j] > -log10(0.05)) {
-                  grid.text(sprintf("%.2f", int[i, j]), x, y, 
-                            gp=gpar(fontsize=10, fontface="bold", 
-                                    col=ifelse(mat[i, j] > quantile(mat, 0.97), 
-                                               "white", "black")))
-                }
-              })
+  a <- Heatmap(mat, 
+    cluster_rows = FALSE, 
+    cluster_columns = FALSE, 
+    na_col = "#FFFFFF", 
+    col = col_fun, 
+    name = name, 
+    column_names_rot = 60, 
+    row_names_side = "left",
+    # top_annotation=ha, bottom_annotation=hb, column_split=ad_anno, 
+    # column_gap = unit(5, "mm"), 
+    column_title = paste("Enrichment of", title),
+    column_title_gp = gpar(fontsize = 20, fontface = "bold"),
+    rect_gp = gpar(type = "none"), 
+    cell_fun = function(j, i, x, y, width, height, fill) { 
+      grid.circle(
+        x = x, 
+        y = y, 
+        r = (buffer[i, j] * dot_scalar), 
+        gp = gpar(
+          fill = col_fun(mat[i, j]), 
+          col = ifelse(pval[i, j] < -log10(0.05), NA, "black")
+        )
+      )
+      if (pval[i, j] > -log10(0.05)) {
+        grid.text(
+          label = sprintf("%.2f", int[i, j]), 
+          x = x, 
+          y = y, 
+          gp = gpar(
+            fontsize = 10, 
+            fontface = "bold", 
+            col = ifelse(mat[i, j] > quantile(mat, 0.97), "white", "black")
+          )
+        )
+      }
+    })
   # heatmap legend
   lgd_list = list(
     Legend(labels=c(rep("", 3)), 
@@ -105,8 +136,13 @@ heat = function(mat, pval, int, name, ...) {
   draw(a, merge_legend=T, annotation_legend_list=lgd_list)
 }
 
+#' load gene modules from reference in to a list of named lists
+#'
+#' @param path string path to reference file
+#'
+#' @return list of named lists of gene ids, sorted
 get_modules_list <- function(path) {
-  ad = fread(file.path(path, "TMT-AD.Human.Genes.txt"))
+  ad = fread(file.path(path, target))
   
   ad$module = factor(ad$module, levels = gtools::mixedsort(unique(ad$module)))
   setorder(ad, module)
@@ -119,7 +155,13 @@ get_modules_list <- function(path) {
   }, USE.NAMES=T)
 }
 
-# dimensions for saving figures
-w = 24
-dh = 0
-h1 = 6
+#' load gene symbol lookup table from reference
+#'
+#' @param path string path to reference file
+#'
+#' @return list of named lists of gene ids, sorted
+get_lookup <- function(path) {
+  ad = fread(file.path(path, target))
+  return(unique(ad[, .(GENE, symbol)]))
+}
+

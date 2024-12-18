@@ -11,13 +11,13 @@
 
 names=(
   "PlasmaPTau181"
-  # "PlasmaAB140P" 
-  # "PlasmaAB142P" 
-  # "Plasma_NFL" 
-  # "Plasma_GFAP" 
-  # "Plasma_pTau217"
-  # "PlasmaABRatio" 
-  # "Plasma_pTau217_AB42Ratio" 
+  "PlasmaAB140P" 
+  "PlasmaAB142P" 
+  "Plasma_NFL" 
+  "Plasma_GFAP" 
+  "Plasma_pTau217"
+  "PlasmaABRatio" 
+  "Plasma_pTau217_AB42Ratio" 
 )
 
 modules=("TMT-AD" "TMT-Resilience" "TREAT-AD" "Wan_etal")
@@ -49,6 +49,44 @@ modules=("TMT-AD" "TMT-Resilience" "TREAT-AD" "Wan_etal")
 # #   -n "dataProt_SS-205063.PlasmaAB140P"
 
 # 02-linreg_lme4qtl.R ------------------------------------------
+# test -------------------------------------
+# parallel -j1 Rscript 02-linreg_lme4qtl.R \
+  # -i "../baseline_PCs/PlasmaAB140P/dataProt_SS-205063.PC.PlasmaAB140P.INTnorm.csv.gz"   \
+  # -o "PlasmaAB140P" \
+  # -p "../prot_names_test.txt" \
+  # -v 'Age,Gender,Storage_days,Study,Subarray,Fed.Fasted,HybControlNormScale,PlateId,Storage,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8'   \
+  # -d 'PlateId,P0028451,P0028463,P0028462,P0028438,P0028430,P0028437'  \
+  # -c "PlasmaAB140P" \
+  # -n "dataProt_SS-205063.PC.related.PlasmaAB140P.t{}" \
+  # -t {} \
+  # -r "../genomic/mypcrelate.PlasmaAB140P.rds" \
+  # ::: 1 2 4 8 16
+
+
+parallel -j16 -k echo 02-linreg_lme4qtl.R \
+  -i "../baseline_PCs/{1}{3}/dataProt_SS-205063.PC.{1}{3}.INTnorm.csv.gz"   \
+  -o {1}{3}   \
+  -p "../prot_names.txt" \
+  -v 'Age,Gender,Storage_days,Study,Subarray,Fed.Fasted,HybControlNormScale,PlateId,Storage,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8'   \
+  -d {2}  \
+  -c "{1}"   \
+  -n "dataProt_SS-205063.PC.related.{1}{3}" \
+  -t 1 \
+  -r "../genomic/mypcrelate.{1}.rds" \
+  ::: "${names[@]}" \
+  :::+ 'PlateId,P0028462,P0028452,P0028449,P0028428,P0028565,P0028463,P0028437'  \
+       'PlateId,P0028451,P0028463,P0028462,P0028438,P0028430,P0028437' \
+       'PlateId,P0028438,P0028439,P0028452,P0028449,P0028565,P0028451,P0028447,P0028430,P0028437' \
+       'PlateId,P0028430,P0028439,P0028463,P0028438,P0028428,P0028447,P0028462,P0028448'  \
+       'PlateId,P0028448,P0028438,P0028565,P0028437'  \
+       'PlateId,P0028428,P0028439,P0028462,P0028437,P0028430,P0028448,P0028452,P0028447'  \
+       'PlateId,P0028448,P0028451,P0028438,P0028565,P0028449,P0028452,P0028428,P0028447'  \
+       'PlateId,P0028437,P0028438,P0028463,P0028430,P0028462,P0028439,P0028428,P0028447,P0028448'  \
+  ::: '' '.APOE'
+
+# ------------------------------------------
+
+
 Rscript 02-linreg_lme4qtl.R \
   -i "../baseline_PCs/PlasmaPTau181/dataProt_SS-205063.PC.PlasmaPTau181.INTnorm.csv.gz"   \
   -o "PlasmaPTau181"   \
@@ -132,7 +170,7 @@ Rscript 02-linreg_lme4qtl.R \
 # 03-Protein_QC.R ------------------------------------------
 for name in "${names[@]}"; do
   Rscript ../baseline/03-Protein_QC.R \
-  -i "$name/dataProt_SS-205063.PC.related.$name.linreg_lme4qtl.csv.gz"  \
+  -i "$name/dataProt_SS-205063.PC.related.$name.lme4qtl.csv.gz"  \
   -o "$name" \
   -r "../Somalogic_reference_Key.txt" \
   -n "dataProt_SS-205063.PC.related.$name"

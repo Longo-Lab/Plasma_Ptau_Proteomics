@@ -172,11 +172,11 @@ names(dat) = make.names(names(dat))
 
 # add in single category columns with feature importance
 # PlateId was important, but P0028449, P0028565, P0028437, P0028430, P0028452, P0028448 were top30 in either glmcross-validated or plr estimates
-dat = recode_dummies(dat, "PlateId", keep=c("P0028447", "P0028565", "P0028428", "P0028463"))
+dat = recode_dummies(dat, "PlateId", keep=c("P0028451", "P0028463", "P0028462", "P0028438", "P0028430", "P0028437"))
 # # Subarray was not very important, but three showed up in top 30 for GLM CV
 # dat = recode_dummies(dat, "Subarray", keep=c("G", "F", "H"))
-# "Negative.80C" came up in both GLM CV and PLS for pTau217
-dat = recode_dummies(dat, "Storage", keep=c("Negative.80C"))
+# "Negative.80C" came up in both GLM CV and PLS for pTau181
+# dat = recode_dummies(dat, "Storage", keep=c("Negative.80C"))
 
 
 # variables to drop from the model (based on feature importance): 

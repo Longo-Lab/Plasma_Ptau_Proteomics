@@ -1,4 +1,4 @@
-#!/usr/bin/env Rscript
+3#!/usr/bin/env Rscript
 ## ---------------------------
 ##
 ## Script name: 01-sample_QC.R
@@ -136,8 +136,8 @@ if (!dir.exists(output)) {
 # variables
 covs <- strsplit(covs,",")[[1]]
 prots <- readLines(prots)
-first_prot = prots[1]                                             
-last_prot = prots[length(prots)]
+# first_prot = prots[1]                                             
+# last_prot = prots[length(prots)]
 
 qc_cols <- c(
   "PIDN", "SampleID", "ADRC_ID", "Visit", "Visit_Consensus", "ConnectivityZscore",
@@ -159,21 +159,8 @@ if (pcs != "") {
   a <- merge(a, x, by = "PIDN")
   covs <- c(covs, names(a)[names(a) %like% "^PC\\d{1,2}$"]) # flexible for PCs
 }
-# no longer needed
-# # Hardcoded add LRS_apoe types, recode existing APOE as factor
-# b <- fread("../genomic/lrs_apoe.txt", colClasses = c("character", "factor"))
-# a <- merge(a, b, by.x = "PIDN", by.y = "IID", all.x = TRUE)
-# a[, APOE := recode_factor(APOE, 
-  # `22` = "e22",
-  # `23` = "e23",
-  # `33` = "e33",
-  # `34` = "e34",
-  # `44` = "e44",
-  # `24` = "e24"
-# )]
-# a[is.na(APOE), APOE := LRS_APOE]
 
-# # Initial QC filters
+# Initial QC filters
 # a = a[SampleType == "Sample"]
 # a = a[Study != "Control"]
 # a = a[RowCheck == "PASS"]
@@ -187,66 +174,8 @@ a = a[!is.na(get(outcome))]
 # a[, Subarray := recode(Subarray, `1`="A", `2`="B", `3`="C", `4`="D", `5`="E", 
 #                        `6`="F", `7`="G", `8`="H")]
 
-# # checking duplicate samples ------------------------------------------------
-# # first duplicates by SampleID
-# cols = c(qc_cols, covs)
-# a[duplicated(SampleID) | duplicated(SampleID, fromLast=T), ..cols]
-# # same 13 duplicates regardless, have two PTau181 measures though
-# # mostly appear to be duplicates across studies or across plates, internal controls
-# # so select a random one for each sampleID
-# set.seed(123)
-# a = a[a[ , .I[sample(.N,1)] , by = SampleID]$V1]
-
-# # next duplicate paricipants at the same visit 
-# a[duplicated(a[, .(PIDN, Visit)]) | duplicated(a[, .(PIDN, Visit)], fromLast=T), ..cols]
-# # 6 samples show up
-
-# # 1 is a genuine duplicate with the same date of draw, Study, PlateID
-# a[duplicated(a[, .(PIDN, Visit, Date.of.draw)]) | duplicated(a[, .(PIDN, Visit, Date.of.draw)], fromLast=T), ..cols]
-# # randomly drop one of the duplicates
-# set.seed(123)
-# a = a[a[ , .I[sample(.N,1)] , by =c("PIDN", "Visit", "Date.of.draw")]$V1]
-
-# # the remaining 5 have differing draw dates, suggesting their Visit and 
-# # Visit_Consensus are wrong. Convert to Date.of.draw to date field to sort
-# a[, Date.of.draw := as.Date(Date.of.draw, format="%m/%d/%Y")]
-# dups = a[duplicated(a[, .(PIDN, Visit)]) , PIDN]
-# a[PIDN %in% dups, ..cols][order(PIDN, Date.of.draw)]
-# # all are part of the "Wave 2" group from Wagner that have what looks like a 
-# # 6-month follow-up or something similar. We can convert to Days since first 
-# # visit to account for non-exact visit spacing. 
-
-# # First, reorder visits to be correct for all PIDNs
-# # a[order(PIDN, Date.of.draw), ..cols]
-# a[, Visit := frank(Date.of.draw, ties.method="first"), by=c("PIDN")]
-# # definitely misordered by Date.of.draw... 
-# # should update metadata, but in the mean time reorder by date
-# all(a[order(PIDN, Date.of.draw), Visit] == a[order(PIDN, Visit), Visit])
-
-# # converting timescales to days since baseline visit -------------------------
-# # convert Date.of.draw to Days since 1st visit
-# a[, DS1V := Date.of.draw - Date.of.draw[Visit == 1], .(PIDN)]
-# a[, DS1V := as.numeric(DS1V)]
 cols = c(qc_cols, covs)
 
-########## Verify this shouldn't error any longer i.e. no is.na(DS1V) or is.na(Date.of.draw)
-# # # Appears there are a number of folks with date issues resulting in NA(n = 18)
-# # a[is.na(DS1V), ..cols]
-# # a[PIDN %in% unique(a[is.na(DS1V), PIDN]), ..cols]
-
-# # # Of those, there are 4 with Visit_Consensus "Baseline", but NA draw dates
-# # # Those are easily converted to DS1V = 0
-# # a[is.na(Date.of.draw) & Visit_Consensus == "Baseline", DS1V := 0]
-
-# # 7 remain that apppear to be visits without a baseline. 
-# # for this analysis, I will calculate their DS1V with Visit 2
-# a[is.na(DS1V), DS1V := Date.of.draw - Date.of.draw[Visit == 2], .(PIDN)]
-# # NOTE, FOR THESE 7, THIS IS NOT THEIR BASELINE VISIT, SO THEY CANNOT BE EASILY 
-# # LINED UP WITH OTHER DATASETS THE ARDC HAS (i.e. IMAGING)
-# # a[PIDN %in% a[DS1V == 0 & Visit == 2, PIDN], ..cols]
-
-# Also of note, the Visit years are very much not a year apart for several PIDNs
-# i.e. one had >2300 days between their first and second visits
 
 # Sample outlier analysis --------------------------------------------------
 # check ConnectivityZscore for extreme outliers:
@@ -346,15 +275,22 @@ a = a[!SampleID %in% drop]
 
 
 # Setup for baseline visit only analysis ---------------------------
-# drop all samples with DS1V != 0
-a = a[DS1V == 0]
+# # # drop all samples with DS1V != 0
+# # a = a[DS1V == 0]
+# Correction, keep only first visit where plasma available
+a = a[order(DS1V)][, head(.SD, 1), by = "PIDN"]
 
 # checking for missed duplicates or bad visit labeling
-a[duplicated(PIDN) | Visit > 1, ..qc_cols]
+a[duplicated(PIDN), ..qc_cols]
 
 # Inverse rank normalization (INT) to z-scale
 cols = c(outcome, prots)
 a[, (cols) := lapply(.SD, RankNorm), .SDcols=cols]
+
+# handling incomplete cases
+cols <- c("SampleID", outcome, covs)
+drops <- a[!complete.cases(a[, ..cols]), SampleID]
+a <- a[!SampleID %in% drops]
 
 # generate surrogate variables ---------------------------------------
 # matrix of proteins
@@ -386,6 +322,7 @@ a <- cbind(a, svs)
 
 # add to covs 
 covs <- c(covs, names(svs))
+cols <- c("SampleID", outcome, covs)
 
 # GLM based feature selection -----------------------------------------
 # examined potential covariates (use pheno data.frame above)

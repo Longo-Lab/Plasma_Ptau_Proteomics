@@ -278,7 +278,7 @@ down_list <- lapply(f_names, function(i) {
 })
 
 # DE genes (split up/down)
-qs <- quantile(result[padj < 0.05, beta], c(0.1, 0.9))
+qs <- quantile(result[padj < 0.05, beta], c(0.2, 0.8))
 top10_list <- lapply(f_names, function(i) {
   result[padj < 0.05 & beta > qs[[2]], GENE]
 })
@@ -288,7 +288,7 @@ bottom10_list <- lapply(f_names, function(i) {
 
 # join and name
 updown_list <- c(top10_list, up_list, de_list, down_list, bottom10_list)
-f_names_updown <- c("Top 10%", "Up", "All", "Down", "Bottom 10%")
+f_names_updown <- c("Top 20%", "Up", "All", "Down", "Bottom 20%")
 names(updown_list) <- paste(replacement, f_names_updown)
 
 

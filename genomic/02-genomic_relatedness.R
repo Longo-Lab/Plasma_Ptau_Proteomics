@@ -3,7 +3,7 @@
 ##
 ## Script name: 02-genomic_relatedness.R
 ##
-## Version: 0.0.1
+## Version: 0.0.3
 ##
 ## Purpose of script: Generate cleaned fam files for LRS and WGS datasets
 ##
@@ -31,6 +31,7 @@ library(BiocParallel)
 library(data.table)
 library(plyr)
 library(dplyr)
+library(future.apply)
 cores <- parallel::detectCores()
 
 # directory locations
@@ -43,19 +44,21 @@ sr_dir <- file.path('/mnt', 'box', 'Stanford_ADRC', 'SRS_WGS')
 
 # Main --------------------------------------------------------------
 # load up SomaLogic metadata file and fix misnamed samples
-metafile <- '../michael_dataProt_SS-205063.hybNorm.medNormInt.plateScale.calibrate.anmlQC.qcCheck.anmlSMP_ADRC_Feb2021_plasmaptauadded_Ted.csv'
+metafile <- '../dataProt_SS-205063.merged.QC.csv'
 prot_rename <- fread(
   paste('in2csv', "Somalogic_renamed_samples.xlsx")
 )
 
+# set up metadata file for relatedness subsets
 a <- fread(metafile)
 
-# relabel mislabeled values
-a$PIDN <- mapvalues(
-  a$PIDN, 
-  from = prot_rename[keep == TRUE, original_id], 
-  to = prot_rename[keep == TRUE, updated_id]
-)
+
+# # relabel mislabeled values
+# a$PIDN <- mapvalues(
+#   a$PIDN, 
+#   from = prot_rename[keep == TRUE, original_id], 
+#   to = prot_rename[keep == TRUE, updated_id]
+# )
 
 # checking covariates
 covs <- c(
@@ -71,40 +74,20 @@ bios <- c(
 )
 all(bios %in% names(a)) # missing Apoe until added
 
-# protein columns
-first_prot = "CRYBB2.10000.28.3"
-last_prot = "IRF6.9999.1.3"
-cols = c(names(a)[grep(first_prot, names(a)):grep(last_prot, names(a))])
+qc_cols <- c(
+  "PIDN", "SampleID", "ADRC_ID", "Visit", "Visit_Consensus", "ConnectivityZscore",
+  "Diagnosis_group", "Date.of.draw", "DS1V"
+)
+all(qc_cols %in% names(a)) # missing Apoe until added
 
-# dealing with duplicated names
-drops <- which(duplicated(names(a)[!names(a) %in% cols]))
-a[, (drops) := NULL]
+# protein columns
+prots = readLines("../prot_names.txt")
+
+# variables
+cols = c(qc_cols, bios, covs)
+
 
 # # # # exploring the data (Comment out normally) --------------------------------
-# # # setcolorder(a, c(names(a)[!names(a) %in% cols], cols))
-# # # a[is.na(APOE) & `Genetics?` == 1, c(1:7,66:75)]
-# # # length(unique(a[is.na(APOE) & `Genetics?` == 1, PIDN]))
-
-# # # # downsample to just DS1V == 0 (from 01-sample_QC.R)
-# # # a = a[SampleType == "Sample"]
-# # # a = a[RowCheck == "PASS"]
-# # # # filter out missing diagnosis, PD people
-# # # pd_folks = c(unique(a$Diagnosis_group[a$Diagnosis_group %like% "PD"]), "")
-# # # lbd_folks = c(unique(a$Diagnosis_group[a$Diagnosis_group %like% "LBD"]), "")
-# # # a = a[!Diagnosis_group %in% c(pd_folks, lbd_folks)]
-# # # a[, Date.of.draw := as.Date(Date.of.draw, format="%m/%d/%Y")]
-# # # a[, DS1V := Date.of.draw - Date.of.draw[Visit == 1], .(PIDN)]
-# # # a[, DS1V := as.numeric(DS1V)]
-
-# # # # Of those, there are 4 with Visit_Consensus "Baseline", but NA draw dates
-# # # # Those are easily converted to DS1V = 0
-# # # a[is.na(Date.of.draw) & Visit_Consensus == "Baseline", DS1V := 0]
-
-# # # # 7 remain that apppear to be visits without a baseline. 
-# # # # for this analysis, I will calculate their DS1V with Visit 2
-# # # a[is.na(DS1V), DS1V := Date.of.draw - Date.of.draw[Visit == 2], .(PIDN)]
-# # # a <- a[PIDN != ""]
-
 # # # # generate presence/absence matrix for upset
 # # # library(UpSetR)
 # # # b <- a[, lapply(.SD, \(i) ifelse(is.na(i), 0, 1)), .SDcols = bios]
@@ -114,52 +97,6 @@ a[, (drops) := NULL]
 # # # d <- a[DS1V == 0 & !is.na(APOE), lapply(.SD, \(i) ifelse(is.na(i), 0, 1)), .SDcols = bios]
 # # # upset(d, nsets = 8, nintersects = NA, order.by = "freq")
 
-# Prep Apoe data for analysis --------------------------------------------
-apoe <- fread(file.path(lr_dir, "lrs_temp.raw"))
-
-# the _bis IIDs are all duplicated, plus three singlet ids
-apoe <- apoe[!IID %like% "[A-Za-z]"]
-
-# also drop the recommended drop samples where keep == FALSE
-lrs_rename <- fread(
-  paste('in2csv', "LRS_renamed_samples.xlsx")
-)
-lrs_rename <- lrs_rename[!is.na(original_id)]
-apoe <- apoe[!IID %in% lrs_rename[keep == FALSE, original_id]]
-
-# generate apoe factor types
-# columns are the concat of Apoe4(19:44908684:T:C) and Apoe2(19:44908822:C:T)
-apoe[['LRS_APOE']] <- recode_factor(
-  paste0(apoe$`19:44908684:T:C_T`, apoe$`19:44908822:C:T_C`), 
-  `20` = "e22",
-  `21` = "e23",
-  `22` = "e33",
-  `12` = "e34",
-  `02` = "e44",
-  `11` = "e24"
-)
-fwrite(apoe[, .(IID, LRS_APOE)], file = "lrs_apoe.txt")
-
-# # # checking apoe types against NCRAD calls
-# # b <- merge(
-  # # unique(a[, .(PIDN, APOE)]), 
-  # # apoe[, .(IID, LRS_APOE)], 
-  # # by.x = "PIDN", 
-  # # by.y = "IID"
-# # )
-# # b[['APOE']] <- recode_factor(
-  # # b[['APOE']], 
-  # # `22` = "e22",
-  # # `23` = "e23",
-  # # `33` = "e33",
-  # # `34` = "e34",
-  # # `44` = "e44",
-  # # `24` = "e24"
-# # )
-# # table(b$APOE == b$LRS_APOE)
-# # # looks like 384/400 simultaneous calls agree
-# # irr::kappa2(b[, .(APOE, LRS_APOE)])
-# # # Kappa = 0.94, z = 27.3, p = 0
 
 # load plink file -------------------------------------------------------
 if (! file.exists(file.path(sr_dir, "srs-lrs_comb.filt.gds"))) {
@@ -169,12 +106,12 @@ if (! file.exists(file.path(sr_dir, "srs-lrs_comb.filt.gds"))) {
     fam.fn = file.path(sr_dir, "srs-lrs_comb.filt.fam"), 
     out.gdsfn = file.path(sr_dir, "srs-lrs_comb.filt.gds")
   )
-  # map gds samples to PIDNs
-  gds <- GdsGenotypeReader(gds_fn)
-  sample.sel <- getScanID(gds)
-  a[, gds := PIDN %in% sample.sel ]
-  setcolorder(a, c(names(a)[!names(a) %in% cols], cols))
-  fwrite(a, file = gsub("_plasmaptauadded_Ted", "", metafile))
+  # # map gds samples to PIDNs
+  # gds <- GdsGenotypeReader(gds_fn)
+  # sample.sel <- getScanID(gds)
+  # a[, gds := PIDN %in% sample.sel ]
+  # setcolorder(a, c(names(a)[!names(a) %in% cols], cols))
+  # fwrite(a, file = gsub("_plasmaptauadded_Ted", "", metafile))
 } else {
   gds_fn <- file.path(sr_dir, "srs-lrs_comb.filt.gds")
 }
@@ -199,32 +136,72 @@ saveRDS(mypcair, file = "mypcair.rds")
 dt1 <- data.table(mypcair$vectors[, 1:8], keep.rownames = TRUE)
 setnames(dt1, c("PIDN", paste0("PC", 1:8)))
 fwrite(dt1, file = "mypcair.PCs.csv")
-
+close(gds)
 
 # PC-Relate -------------------------------
+plan("multicore", workers = 8)
+options(future.globals.maxSize = 4 * 1e9)
 # prune to the relevant biomarker overlap
-subfile <- tempfile()
-gds <- GdsGenotypeReader(gds_fn)
-####lapply for each biomarker#######
-# intersection for variable of interest
-gdsSubset(gdsfile, subfile, sample.include=sample.sel, snp.include=snp.sel)
-# save as subfile gds
+gds <- GenotypeBlockIterator(GenotypeData(GdsGenotypeReader(gds_fn, allow.fork = TRUE)))
+sample.sel <- getScanID(gds)
 
-# run PC-Relate
-gds <- GenotypeBlockIterator(gds)
-mypcrelate <- pcrelate(gds, 
-  pcs = mypcair$vectors[,1:8], 
-  training.set = mypcair$unrels,
-  BPPARAM=BiocParallel::SerialParam()
-)
+# for each biomarker make grm (second loop includes the APOE covariate)
+future_lapply(bios, function(i) {
+  # keep only first visit where plasma available
+  x <- a[!is.na(get(i))][order(DS1V)][, head(.SD, 1), by = "PIDN"]
+  # drop samples with incomplete cases
+  cols <- c("SampleID", i, covs)
+  x <- x[complete.cases(x[, ..cols])]
 
-# generate genetic relationship matrix # maybe generate on the fly in the lme4 script.
-grm <- pcrelateToMatrix(mypcrelate, thresh = 2^(-11/2), scaleKin = 2)
+  # intersection for variable of interest
+  both <- intersect(x[, PIDN], sample.sel)
 
-# write pcrelate RDS and GRM to file
-saveRDS(mypcrelate, file = "mypcrelate.rds")
+  # run PC-Relate
+  mypcrelate <- pcrelate(gds, 
+    pcs = mypcair$vectors[, 1:8], 
+    training.set = intersect(mypcair$unrels, both),
+    BPPARAM = BiocParallel::SerialParam(),
+    sample.include = both
+  )
+
+  # write pcrelate RDS and GRM to file
+  saveRDS(mypcrelate, file = paste("mypcrelate", i, "rds", sep = "."))
+}, future.seed = TRUE)
 
 # # to read to Matrix format in lme4 ----------------------------------------
 # pcr <- readRDS(file = "mypcrelate.rds")
 # grm <- pcrelateToMatrix(pcr, thresh = 2^(-11/2), scaleKin = 2)
+
+
+
+
+# # # for each biomarker make grm (second loop includes the APOE covariate)
+# # lapply(c("all", "APOE"), function(j) {
+  # # future_lapply(bios, function(i) {
+    # # # keep only first visit where plasma available
+    # # x <- a[!is.na(get(i))][order(DS1V)][, head(.SD, 1), by = "PIDN"]
+    # # # drop samples with incomplete cases
+    # # if (j == "all") {
+      # # cols <- c("SampleID", i, covs[-7])
+    # # } else {
+      # # cols <- c("SampleID", i, covs)
+    # # }
+    # # x <- x[complete.cases(x[, ..cols])]
+
+    # # # intersection for variable of interest
+    # # both <- intersect(x[, PIDN], sample.sel)
+
+    # # # run PC-Relate
+    # # mypcrelate <- pcrelate(gds, 
+      # # pcs = mypcair$vectors[, 1:8], 
+      # # training.set = intersect(mypcair$unrels, both),
+      # # BPPARAM = BiocParallel::SerialParam(),
+      # # sample.include = both
+    # # )
+
+    # # # write pcrelate RDS and GRM to file
+    # # saveRDS(mypcrelate, file = paste("mypcrelate", i, j, "rds", sep = "."))
+  # # }, future.seed = TRUE)
+# # })
+
 

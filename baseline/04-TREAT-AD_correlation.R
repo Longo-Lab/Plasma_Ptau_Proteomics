@@ -117,18 +117,19 @@ trt = fread(paste0(ref, "/TREAT-AD.Human.Genes.txt"))
 # table downloaded from synapse
 # synapse get -q "SELECT * FROM syn22758536"
 expr = fread(paste0(ref, "/SYNAPSE_TABLE_QUERY_96970654.csv"))
+expr[, Pro_stat := -log10(Pro_fdr_CorPVal) * Pro_TE]
 
 # merge tables
-dt = merge(trt, expr[, .(ENSG, Pro_TE)], all.x=T, by.x="GENE", by.y="ENSG")
+dt = merge(trt, expr[, .(ENSG, Pro_stat)], all.x = T, by.x = "GENE", by.y = "ENSG")
 dt = merge(dt, bm[, .(GENE, `t stat`, stat_pval, stat_padj)], all.x=T, by="GENE")
 
 # calc correlations (exclude all is.na(beta) )
 cors = c("t stat", "stat_pval", "stat_padj")
 corr_list = lapply(cors, function(i){
-  dt[!is.na(get(i)) & !is.na(Pro_TE)
+  dt[!is.na(get(i)) & !is.na(Pro_stat)
      ][, N := .N, by=module
        ][N >= 2
-         ][, cor.test(get(i), Pro_TE, method="spearman")[-2], by=module]
+         ][, cor.test(get(i), Pro_stat, method="spearman")[-2], by=module]
 })
 setattr(corr_list, 'names', c(outcome, sprintf("%s Pval < 0.05", outcome), sprintf("%s Padj < 0.05", outcome)))
 corrs = rbindlist(corr_list, idcol="group")
