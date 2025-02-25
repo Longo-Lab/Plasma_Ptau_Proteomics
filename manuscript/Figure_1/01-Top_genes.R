@@ -98,6 +98,9 @@ heat <- function(mat, pval, count, name, range = NULL, ...) {
   if (is.null(range)) {
     bottom <- floor(min(mat, na.rm = TRUE))
     top <- ceiling(max(mat, na.rm = TRUE))
+  } else {
+    bottom <- range[1]
+    top <- range[2]
   }
   col_fun <- colorRamp2(c(bottom, 0, top), c("#2166ac", "#FFFFFF", "#b2182b"))
 
@@ -222,40 +225,44 @@ result <- rbindlist(result)
 # count of significant occurences across biomarkers
 result[, count := sum(.SD < 0.05), by = NCBI_ID, .SDcols = "padj"]
 
-# select range across all sets
-bottom <- round(min(result[["beta"]], na.rm = TRUE) - 0.05, digits = 2)
-top <- round(max(result[["beta"]], na.rm = TRUE) + 0.05, digits = 2)
-
 # drop APOE from input so it will match the results
 input <- gsub(".APOE", "", input)
 
-# heatmap
-m.list <- lapply(input, function(i) {
-  get_mats(result[dx == i], "Symbol", "beta", "padj", "count")
-})
-p.list <- lapply(seq(input), function(i) {
-  grid.grabExpr(
-    heat(
-      mat = m.list[[i]][[1]], 
-      pval = m.list[[i]][[2]], 
-      count = m.list[[i]][[3]], 
-      name = "beta", 
-      range = c(bottom, top),
-      column_title = gt_render(input[i], padding = unit(c(0, 0, 0, 0.5), "in")),
-      column_title_gp = gpar(fontsize = 16, fontface = "bold")
+# plot colored by beta and t stat
+lapply(c("beta", "t stat"), function(j) {
+  # select range across all sets
+  bottom <- round(min(result[[j]], na.rm = TRUE) - 0.05, digits = 2)
+  top <- round(max(result[[j]], na.rm = TRUE) + 0.05, digits = 2)
+
+  # heatmap
+  m.list <- lapply(input, function(i) {
+    get_mats(result[dx == i], "Symbol", j, "padj", "count")
+  })
+  p.list <- lapply(seq(input), function(i) {
+    grid.grabExpr(
+      heat(
+        mat = m.list[[i]][[1]], 
+        pval = m.list[[i]][[2]], 
+        count = m.list[[i]][[3]], 
+        name = j, 
+        range = c(bottom, top),
+        column_title = gt_render(input[i], padding = unit(c(0, 0, 0, 0.5), "in")),
+        column_title_gp = gpar(fontsize = 16, fontface = "bold")
+      )
     )
+  })
+
+
+  ggsave(
+    filename = file.path(output, 
+      paste(nameset, gsub(" ", "_", j), "top_genes.pdf", sep=".")
+    ), 
+    plot = wrap_plots(p.list) + plot_layout(nrow = 1), 
+    device = cairo_pdf,
+    width = 20, 
+    height = 14
   )
 })
-
-
-ggsave(
-  filename = file.path(output, paste(nameset, "top_genes.pdf", sep=".")), 
-  plot = wrap_plots(p.list) + plot_layout(nrow = 1), 
-  device = cairo_pdf,
-  width = 20, 
-  height = 14
-)
-
 
 # Volcano printing ------------------------------------
 # prep for printing

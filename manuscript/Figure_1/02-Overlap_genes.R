@@ -143,6 +143,9 @@ ggsave(
   height = 9
 )
 
+# Kable tables of counts
+print(sprintf("Counts for %s:", nameset))
+knitr::kable(result[padj < 0.05, .N, by = dx])
 
 # Pairwise correlation plots -----------------------------------------------
 upper_fn <- function(data, mapping, method = "s", use = "pairwise", ...){
