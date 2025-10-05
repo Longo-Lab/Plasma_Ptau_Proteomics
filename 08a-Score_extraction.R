@@ -3,7 +3,7 @@
 #'
 #' Script name: 08a-Score_extraction.R
 #'
-#' Version: 0.0.1
+#' Version: 0.0.2
 #'
 #' Purpose of script: Get celltype matricies from results for Score celltype 
 #'  
@@ -18,8 +18,8 @@
 #' ---------------------------
 #'
 #' Notes:
-#'   
-#'   
+#'   Updates:
+#'   v0.0.2 - bugfixes for outpath typos and help menu
 #'   
 #'   
 #'
@@ -51,9 +51,10 @@ option_list <- list(
     c("-s", "--statistic"),
     dest = "stat",
     type = "character",
-    help = "statistic(s) to retrieve in flat file [stat1,stat2,...]"
-      "options are:"
+    help = paste(
+      "statistic(s) to retrieve in flat file [stat1,stat2,...] options are:\n",
       "enrichment_scores, normalized_scores, p_values, fdr_values, thresholds used"
+    )
   ),
   make_option(
     c("-o", "--outpath"),
@@ -92,8 +93,8 @@ for (field in fields) {
 }
 
 # check outpath status
-if (!dir.exists(output)) {
-  dir.create(output, recursive = TRUE)
+if (!dir.exists(outpath)) {
+  dir.create(outpath, recursive = TRUE)
 }
 
 # process stat to list
