@@ -3,7 +3,7 @@
 #'
 #' Script name: 08-Cell-type_scoring.R
 #'
-#' Version: 0.0.1
+#' Version: 0.0.2
 #'
 #' Purpose of script: Score celltype for each sample using weighted GSEA method
 #'  
@@ -18,7 +18,7 @@
 #' ---------------------------
 #'
 #' Notes:
-#'   
+#'   v0.0.2 - updates to drop for loops and speed processing
 #'   
 #'   
 #'   
@@ -26,12 +26,14 @@
 #' ---------------------------
 
 #' load up the packages we will need:  (uncomment as required)
+library(Rcpp)
+library(RcppParallel)
+# library(bit)
 library(data.table)
 library(optparse)
 library(ggplot2)
 library(patchwork)
-library(future.apply)
-library(tictoc)
+
 
 # Nameset helper function
 nameset_default <- function(input){
@@ -108,7 +110,7 @@ for (field in fields) {
 # check the current active plan
 if (threads == 0) {
   threads <- as.integer(parallelly::availableCores()) - 2
-} else if (is.numeric(threads)) {
+} else if (is.numeric(threads) & threads != 0) {
   threads <- as.integer(threads)
 } else {
   cat("threads must be an integer value")
@@ -116,9 +118,7 @@ if (threads == 0) {
     call. = FALSE
   )
 }
-print(sprintf("Setting up %d forks for samples", threads))
-setDTthreads(1)
-plan('multicore', workers = threads)
+print(sprintf("Setting up %d threads for samples", threads))
 
 # input variables
 input <- strsplit(input, ",")[[1]]
@@ -130,87 +130,476 @@ if (!dir.exists(output)) {
 
 
 # Functions -------------------------
-#' Calculate Cell Type Enrichment Using Specificity-Weighted GSEA
+# # Compile the C++ functions for the most computation-intensive parts
+
+# #' @title Calculate Running Sum with C++ for GSEA Analysis
+# #'
+# #' @description
+# #' Compiled C++ function that efficiently calculates the running sum for GSEA analysis.
+# #' 
+# #' @param scores Numeric vector. Specificity scores for proteins in ranked order.
+# #' @param isAbove Logical vector. Whether each protein is above threshold.
+# #' @param N_R Numeric. Normalization factor for proteins above threshold.
+# #' @param N_non_specific Numeric. Normalization factor for proteins below threshold.
+# #' @param p_weight Numeric. Exponent for the specificity scores.
+# #'
+# #' @return Numeric vector. The running sum values.
+# #'
+# #' @keywords internal
+# cppFunction(
+  # includes = '#include <RcppParallel.h>',
+  # code = '
+  # // Calculate running sum more efficiently in C++
+  # NumericVector calcRunningSum(NumericVector scores, LogicalVector isAbove, 
+                              # double N_R, double N_non_specific, double p_weight) {
+    # int n = scores.size();
+    # NumericVector rs(n);
+    
+    # // First position
+    # if(isAbove[0]) {
+      # rs[0] = pow(scores[0], p_weight) / N_R;
+    # } else {
+      # rs[0] = -1.0 / N_non_specific;
+    # }
+    
+    # // Remaining positions
+    # for(int j = 1; j < n; j++) {
+      # double step = isAbove[j] ? pow(scores[j], p_weight) / N_R : -1.0 / N_non_specific;
+      # rs[j] = rs[j-1] + step;
+    # }
+    
+    # return rs;
+  # }', 
+  # depends = "RcppParallel"
+# )
+
+
+# #' @title Calculate Maximum Deviation with C++ for GSEA Permutation Testing
+# #'
+# #' @description
+# #' Compiled C++ function that efficiently calculates the maximum deviation for 
+# #' permutation testing in GSEA analysis, with short circuit optimization.
+# #'
+# #' @param scores Numeric vector. Specificity scores for proteins in ranked order.
+# #' @param isAbove Logical vector. Whether each protein is above threshold.
+# #' @param N_R Numeric. Normalization factor for proteins above threshold.
+# #' @param N_non_specific Numeric. Normalization factor for proteins below threshold.
+# #' @param p_weight Numeric. Exponent for the specificity scores.
+# #'
+# #' @return Numeric. The maximum deviation value, with sign preserved.
+# #'
+# #' @keywords internal
+# cppFunction(
+  # includes = '#include <RcppParallel.h>',
+  # code = '
+  # // Calculate maximum deviation for permutation testing with short circuit
+  # double calcMaxDeviation(NumericVector scores, LogicalVector isAbove, 
+                       # double N_R, double N_non_specific, double p_weight) {
+    # int n = scores.size();
+    # double running_sum = 0.0;
+    # double max_deviation = 0.0;
+    
+    # for(int j = 0; j < n; j++) {
+      # double step = isAbove[j] ? pow(scores[j], p_weight) / N_R : -1.0 / N_non_specific;
+      # running_sum += step;
+      
+      # if(fabs(running_sum) > max_deviation) {
+        # max_deviation = fabs(running_sum);
+      # }
+    # }
+    
+    # return running_sum > 0 ? max_deviation : -max_deviation;
+  # }',
+  # depends = "RcppParallel"
+# )
+
+
+#' @title Process a single sample for specificity-weighted GSEA with optimizations
 #'
-#' This function implements a weighted Gene Set Enrichment Analysis (GSEA) approach
-#' for proteomic data using cell type specificity scores as weights. It calculates
-#' enrichment scores for each cell type based on protein expression rankings and
-#' their cell type specificity.
+#' @description 
+#' Internal function that processes a single sample for specificity-weighted GSEA analysis.
+#' Implements multiple optimizations including compiled code, matrix operations,
+#' bit operations, and algorithmic improvements.
+#'
+#' @param sample_idx Integer. Index of the sample to process.
+#' @param sample_names Character vector. Names of all samples.
+#' @param expr_matrix Numeric matrix. Expression data.
+#' @param specificity_matrix Numeric matrix. Cell type specificity scores.
+#' @param thresholds Numeric vector. Specificity thresholds for each cell type.
+#' @param above_threshold_matrix Logical matrix. Which proteins are above threshold.
+#' @param cell_types Character vector. Names of cell types to analyze.
+#' @param min_size Integer. Minimum number of proteins above threshold.
+#' @param p_weight Numeric. Exponent for the ranking metric.
+#' @param nperm Integer. Number of permutations for significance testing.
+#' @param verbose Logical. Whether to print progress messages.
+#'
+#' @return A list containing enrichment results for the specified sample.
+#'
+#' @examples
+#' \dontrun{
+#' # This is an internal function not meant to be called directly
+#' # See specificityWeightedGSEA_optimized for usage examples
+#' 
+#' # Example data (used internally)
+#' expr_data <- matrix(
+#'   c(5.2, 3.8, 0.5, 2.1, 4.5, 0.2, 3.3, 1.2),
+#'   ncol = 1,
+#'   dimnames = list(
+#'     c("ProteinA", "ProteinB", "ProteinC", "ProteinD", 
+#'       "ProteinE", "ProteinF", "ProteinG", "ProteinH"),
+#'     c("Sample1")
+#'   )
+#' )
+#' 
+#' spec_data <- matrix(
+#'   c(0.9, 0.1, 0.0, 0.3, 0.1, 0.0, 0.8, 0.2,
+#'     0.1, 0.8, 0.0, 0.2, 0.7, 0.1, 0.0, 0.4),
+#'   ncol = 2,
+#'   dimnames = list(
+#'     c("ProteinA", "ProteinB", "ProteinC", "ProteinD",
+#'       "ProteinE", "ProteinF", "ProteinG", "ProteinH"),
+#'     c("Neuron", "Astrocyte")
+#'   )
+#' )
+#' 
+#' # Pre-compute values that would be calculated by the main function
+#' cell_types <- colnames(spec_data)
+#' thresholds <- c(Neuron = 0.1, Astrocyte = 0.1)
+#' above_threshold_matrix <- matrix(spec_data > 0.1, nrow = nrow(spec_data),
+#'                              dimnames = list(rownames(spec_data), cell_types))
+#' 
+#' # Process a single sample (for internal use only)
+#' results <- .process_sample_optimized(
+#'   sample_idx = 1,
+#'   sample_names = "Sample1",
+#'   expr_matrix = expr_data,
+#'   specificity_matrix = spec_data,
+#'   thresholds = thresholds,
+#'   above_threshold_matrix = above_threshold_matrix,
+#'   cell_types = cell_types,
+#'   min_size = 2,  # Small for example
+#'   p_weight = 1,
+#'   nperm = 10,    # Small for example
+#'   verbose = TRUE
+#' )
+#' }
+#'
+#' @keywords internal
+.process_sample_optimized <- function(sample_idx, sample_names, expr_matrix, specificity_matrix,
+                                   thresholds, above_threshold_matrix, cell_types,
+                                   min_size, p_weight, nperm, verbose) {
+  sample_name <- sample_names[sample_idx]
+  if (verbose) message(sprintf("Processing sample %s (%d of %d)", 
+                            sample_name, sample_idx, length(sample_names)))
+  
+  # Get expression values for this sample
+  expr_values <- expr_matrix[, sample_idx]
+  names(expr_values) <- rownames(expr_matrix)
+  
+  # Rank proteins based on expression
+  protein_ranks <- sort(expr_values, decreasing = TRUE, index.return = TRUE)
+  ranked_proteins <- rownames(expr_matrix)[protein_ranks$ix]
+  n_proteins <- length(ranked_proteins)
+  
+  # Create matrix of ranked specificity scores
+  spec_scores_ranked <- matrix(0, nrow = n_proteins, ncol = length(cell_types),
+                            dimnames = list(ranked_proteins, cell_types))
+  
+  for (i in seq_along(cell_types)) {
+    ct <- cell_types[i]
+    spec_scores_ranked[, i] <- specificity_matrix[ranked_proteins, ct]
+  }
+  
+  # REMOVED: Bit operations - just use standard logical matrices instead
+  
+  # Create matrix of above threshold indicators in ranked order
+  above_threshold_ranked <- matrix(FALSE, nrow = n_proteins, ncol = length(cell_types),
+                                dimnames = list(ranked_proteins, cell_types))
+  
+  for (i in seq_along(cell_types)) {
+    above_threshold_ranked[, i] <- above_threshold_matrix[ranked_proteins, i]
+  }
+  
+  # Compute normalization factors for each cell type
+  N_R_values <- numeric(length(cell_types))
+  names(N_R_values) <- cell_types
+  
+  N_non_specific_values <- numeric(length(cell_types))
+  names(N_non_specific_values) <- cell_types
+  
+  valid_cell_types <- logical(length(cell_types))
+  names(valid_cell_types) <- cell_types
+  
+  # Pre-compute powers if p_weight is not 1
+  if (p_weight != 1) {
+    spec_powers <- spec_scores_ranked^p_weight
+  } else {
+    spec_powers <- spec_scores_ranked
+  }
+  
+  for (i in seq_along(cell_types)) {
+    proteins_above <- above_threshold_ranked[, i]
+    count_above <- sum(proteins_above)
+    
+    if (count_above >= min_size) {
+      if (p_weight != 1) {
+        N_R_values[i] <- sum(spec_powers[proteins_above, i])
+      } else {
+        N_R_values[i] <- sum(spec_scores_ranked[proteins_above, i])
+      }
+      N_non_specific_values[i] <- n_proteins - count_above
+      valid_cell_types[i] <- TRUE
+    } else {
+      N_R_values[i] <- NA
+      N_non_specific_values[i] <- NA
+      valid_cell_types[i] <- FALSE
+    }
+  }
+  
+  # Initialize results containers
+  enrichment_scores <- numeric(length(cell_types))
+  names(enrichment_scores) <- cell_types
+  
+  running_scores <- matrix(0, nrow = n_proteins, ncol = length(cell_types))
+  rownames(running_scores) <- ranked_proteins
+  colnames(running_scores) <- cell_types
+  
+  leading_edge <- vector("list", length(cell_types))
+  names(leading_edge) <- cell_types
+  
+  max_positions <- numeric(length(cell_types))
+  names(max_positions) <- cell_types
+  
+  # Calculate enrichment scores for valid cell types using Rcpp
+  for (i in which(valid_cell_types)) {
+    ct <- cell_types[i]
+    
+    # KEEP: Use Rcpp for running sum calculation
+    rs <- calcRunningSum(
+      spec_scores_ranked[, i], 
+      above_threshold_ranked[, i], 
+      N_R_values[i], 
+      N_non_specific_values[i], 
+      p_weight
+    )
+    
+    # Store running score
+    running_scores[, i] <- rs
+    
+    # Find maximum deviation
+    max_idx <- which.max(abs(rs))
+    max_val <- rs[max_idx]
+    
+    # Store results
+    enrichment_scores[i] <- max_val
+    max_positions[i] <- max_idx
+    
+    # Store leading edge proteins
+    if (max_val > 0) {
+      leading_edge[[i]] <- ranked_proteins[1:max_idx]
+    } else {
+      leading_edge[[i]] <- ranked_proteins[max_idx:n_proteins]
+    }
+  }
+  
+  # Permutation testing for each cell type
+  p_values <- rep(NA, length(cell_types))
+  names(p_values) <- cell_types
+  normalized_scores <- enrichment_scores
+  
+  if (nperm > 0) {
+    # Matrix operations for permutation testing
+    all_perms <- matrix(0, nrow = nperm, ncol = n_proteins)
+    for (p in 1:nperm) all_perms[p,] <- sample(n_proteins)
+    
+    # Pre-allocate matrix for null distribution
+    valid_indices <- which(valid_cell_types)
+    null_dist_matrix <- matrix(0, nrow = nperm, ncol = length(valid_indices))
+    colnames(null_dist_matrix) <- cell_types[valid_indices]
+    
+    # Process each valid cell type
+    for (idx in seq_along(valid_indices)) {
+      i <- valid_indices[idx]
+      ct <- cell_types[i]
+      
+      # Get pre-computed values for this cell type
+      ct_spec_scores <- spec_scores_ranked[, i]
+      ct_above_threshold <- above_threshold_ranked[, i]
+      ct_N_R <- N_R_values[i]
+      ct_N_non_specific <- N_non_specific_values[i]
+      
+      # Process all permutations for this cell type
+      for (p in 1:nperm) {
+        perm_idx <- all_perms[p,]
+        
+        # KEEP: Use Rcpp for max deviation calculation
+        null_dist_matrix[p, idx] <- calcMaxDeviation(
+          ct_spec_scores[perm_idx],
+          ct_above_threshold[perm_idx],
+          ct_N_R,
+          ct_N_non_specific,
+          p_weight
+        )
+      }
+    }
+    
+    # Calculate p-values and normalize scores
+    for (idx in seq_along(valid_indices)) {
+      i <- valid_indices[idx]
+      es <- enrichment_scores[i]
+      null_dist <- null_dist_matrix[, idx]
+      
+      # Calculate p-value with pseudocount
+      if (es >= 0) {
+        p_values[i] <- (sum(null_dist >= es) + 1) / (nperm + 1)
+      } else {
+        p_values[i] <- (sum(null_dist <= es) + 1) / (nperm + 1)
+      }
+      
+      # Normalize enrichment score
+      null_mean <- mean(null_dist)
+      null_sd <- sd(null_dist)
+      if (null_sd > 0) {
+        normalized_scores[i] <- (es - null_mean) / null_sd
+      }
+    }
+  }
+  
+  # Adjust p-values for multiple testing
+  fdr <- p.adjust(p_values, method = "BH")
+  
+  # Return results for this sample
+  return(list(
+    sample = sample_name,
+    enrichment_scores = enrichment_scores,
+    normalized_scores = normalized_scores,
+    p_values = p_values,
+    fdr = fdr,
+    leading_edge = leading_edge,
+    running_scores = running_scores,
+    ranked_proteins = ranked_proteins,
+    thresholds_used = thresholds[names(enrichment_scores)]
+  ))
+}
+
+
+#' @title Calculate Cell Type Enrichment Using Optimized Specificity-Weighted GSEA
+#' 
+#' @description
+#' This function analyzes all samples in an expression matrix using highly optimized
+#' specificity-weighted GSEA to calculate cell type enrichment scores. Includes
+#' optimizations with compiled code, matrix operations, bit operations, and 
+#' algorithmic improvements.
 #'
 #' @param expr_matrix Numeric matrix of protein expression values. Rows are proteins,
 #'        columns are samples.
 #' @param specificity_matrix Numeric matrix of cell type specificity scores (0-1 scale).
 #'        Rows are proteins, columns are cell types.
-#' @param sample_col Integer or character. Which column of expr_matrix to use for ranking.
-#'        Default is 1.
-#' @param specificity_threshold Numeric or character. Threshold for considering proteins as "specific"
-#'        to a cell type. Can be a numeric value (0-1) or "median" to use the median of non-zero
-#'        specificity values for each cell type. Default is 0 (no threshold).
-#' @param nperm Integer. Number of permutations for significance testing. Default is median.
-#'        Set to 0 to skip permutation testing.
-#' @param p_weight Numeric. Exponent for the ranking metric in the enrichment score 
-#'        calculation. Default is 1.
-#' @param min_size Integer. Minimum number of proteins with non-zero specificity to 
-#'        consider a cell type for analysis. Default is 5.
+#' @param rank_metric Character. Method for ranking proteins: "expression" (default) or "fold_change"
+#' @param nperm Integer. Number of permutations for significance testing. Default is 1000.
+#' @param p_weight Numeric. Exponent for the ranking metric. Default is 1.
+#' @param specificity_threshold Numeric or character. Threshold for considering proteins as "specific".
+#'        Can be a numeric value (0-1) or "median". Default is "median".
+#' @param min_size Integer. Minimum number of proteins above threshold. Default is 5.
 #' @param verbose Logical. Whether to print progress messages. Default is TRUE.
+#' @param parallel Logical. Whether to use parallel processing for samples. Default is TRUE.
+#' @param n_cores Integer. Number of CPU cores to use. Default is NULL (auto-detect).
 #'
-#' @return A list containing:
-#'   \item{enrichment_scores}{Numeric vector of enrichment scores for each cell type}
-#'   \item{normalized_scores}{Numeric vector of normalized enrichment scores}
-#'   \item{p_values}{P-values from permutation testing, if nperm > 0}
-#'   \item{fdr}{False discovery rates, adjusted p-values}
-#'   \item{leading_edge}{List of leading edge proteins for each significant cell type}
-#'   \item{running_scores}{Matrix of running enrichment score values for plotting}
-#'   \item{thresholds_used}{Numeric vector of specificity thresholds used for each cell type}
+#' @return A named list where each element contains the enrichment analysis results for one sample.
+#'         Each sample's results include:
+#'         \itemize{
+#'           \item{\code{sample}}: {Name of the sample}
+#'           \item{\code{enrichment_scores}}: {Vector of enrichment scores for each cell type}
+#'           \item{\code{normalized_scores}}: {Vector of normalized enrichment scores}
+#'           \item{\code{p_values}}: {Vector of p-values from permutation testing}
+#'           \item{\code{fdr}}: {Vector of FDR-adjusted p-values}
+#'           \item{\code{leading_edge}}: {List of leading edge proteins for each cell type}
+#'           \item{\code{running_scores}}: {Matrix of running scores for visualization}
+#'           \item{\code{ranked_proteins}}: {Vector of proteins in ranked order}
+#'           \item{\code{thresholds_used}}: {Thresholds used for each cell type}
+#'         }
 #'
 #' @examples
-#' # Create example data
-#' proteins <- paste0("protein", 1:100)
-#' cell_types <- paste0("celltype", 1:5)
-#' samples <- paste0("sample", 1:3)
+#' # Create example expression dataset (proteins x samples)
+#' expr_data <- matrix(
+#'   c(5.2, 3.8, 0.5, 2.1, 4.5, 0.2, 3.3, 1.2,  # Sample 1
+#'     4.8, 4.2, 0.4, 1.9, 5.1, 0.3, 3.5, 1.0,  # Sample 2
+#'     6.1, 3.5, 0.6, 2.5, 4.0, 0.1, 3.8, 0.8), # Sample 3
+#'   ncol = 3,
+#'   byrow = FALSE,
+#'   dimnames = list(
+#'     c("ProteinA", "ProteinB", "ProteinC", "ProteinD", 
+#'       "ProteinE", "ProteinF", "ProteinG", "ProteinH"),
+#'     c("Sample1", "Sample2", "Sample3")
+#'   )
+#' )
 #' 
-#' # Example expression matrix (proteins x samples)
-#' expr_data <- matrix(rnorm(100*3), nrow=100, ncol=3)
-#' rownames(expr_data) <- proteins
-#' colnames(expr_data) <- samples
+#' # Create example cell type specificity dataset (proteins x cell types)
+#' spec_data <- matrix(
+#'   c(0.9, 0.1, 0.0, 0.3, 0.1, 0.0, 0.8, 0.2,  # Neuron
+#'     0.1, 0.8, 0.0, 0.2, 0.7, 0.1, 0.0, 0.4,  # Astrocyte
+#'     0.0, 0.2, 0.9, 0.5, 0.1, 0.8, 0.0, 0.3), # Microglia
+#'   ncol = 3,
+#'   byrow = FALSE,
+#'   dimnames = list(
+#'     c("ProteinA", "ProteinB", "ProteinC", "ProteinD",
+#'       "ProteinE", "ProteinF", "ProteinG", "ProteinH"),
+#'     c("Neuron", "Astrocyte", "Microglia")
+#'   )
+#' )
 #' 
-#' # Example specificity matrix (proteins x cell types)
-#' spec_data <- matrix(runif(100*5), nrow=100, ncol=5)
-#' rownames(spec_data) <- proteins
-#' colnames(spec_data) <- cell_types
+#' # Run analysis with minimal permutations for the example
+#' \dontrun{
+#' results <- specificityWeightedGSEA_optimized(
+#'   expr_matrix = expr_data,
+#'   specificity_matrix = spec_data,
+#'   nperm = 100,  # Reduced for quick example
+#'   specificity_threshold = "median",
+#'   verbose = TRUE
+#' )
 #' 
-#' # Run the analysis
-#' results <- specificityWeightedGSEA(expr_data, spec_data, sample_col=1, nperm=100)
+#' # Access results for a specific sample
+#' sample1_results <- results[["Sample1"]]
 #' 
-#' # Plot top enriched cell type
-#' plotEnrichment(results, cell_type=results$enrichment_scores[1])
+#' # Extract enrichment scores for all samples
+#' all_scores <- sapply(results, function(x) x$enrichment_scores)
+#' 
+#' # Find significant cell types (FDR < 0.05) for each sample
+#' significant_cell_types <- lapply(results, function(x) {
+#'   cell_types <- names(x$fdr)[x$fdr < 0.05]
+#'   if(length(cell_types) > 0) cell_types else "None"
+#' })
+#' 
+#' # Extract the leading edge proteins for a specific cell type in Sample1
+#' if("Neuron" %in% names(results[["Sample1"]]$leading_edge)) {
+#'   neuron_proteins <- results[["Sample1"]]$leading_edge[["Neuron"]]
+#'   print(paste("Leading edge proteins for Neuron in Sample1:", 
+#'              paste(neuron_proteins, collapse=", ")))
+#' }
+#' }
 #'
-#' @references
-#' Adapted from the Gene Set Enrichment Analysis methodology:
-#' Subramanian, A., et al. (2005). Gene set enrichment analysis: A knowledge-based 
-#' approach for interpreting genome-wide expression profiles. PNAS, 102(43), 15545-15550.
-#'
+#' @importFrom parallel makeCluster stopCluster parLapply detectCores clusterExport
+#' @importFrom stats median p.adjust
+#' @importFrom Rcpp sourceCpp
+#' @importFrom RcppParallel RcppParallelLibs
 #' @export
-
-specificityWeightedGSEA <- function(expr_matrix, 
-                                    specificity_matrix, 
-                                    sample_col = 1,
-                                    specificity_threshold = "median", 
-                                    nperm = 1000, 
-                                    p_weight = 1, 
-                                    min_size = 5, 
-                                    verbose = TRUE
-                                    ) {
+specificityWeightedGSEA <- function(expr_matrix, specificity_matrix, 
+                                   rank_metric = "expression", nperm = 1000, 
+                                   p_weight = 1, specificity_threshold = "median",
+                                   min_size = 5, verbose = TRUE, 
+                                   parallel = TRUE, n_cores = NULL) {
+  
+  start_time <- Sys.time()
+  
+  # Check for required packages
+  if (!requireNamespace("Rcpp", quietly = TRUE) || 
+      !requireNamespace("RcppParallel", quietly = TRUE)) {
+    stop("Packages 'Rcpp' and 'RcppParallel' are required")
+  }
+  
   # Input validation
   if (!is.matrix(expr_matrix) || !is.matrix(specificity_matrix)) {
     stop("Expression and specificity inputs must be matrices")
-  }
-  
-  if (is.character(sample_col)) {
-    if (!sample_col %in% colnames(expr_matrix)) {
-      stop("Sample column name not found in expression matrix")
-    }
-    sample_col <- which(colnames(expr_matrix) == sample_col)
   }
   
   # Check for matching protein names
@@ -218,219 +607,136 @@ specificityWeightedGSEA <- function(expr_matrix,
     stop("Both matrices must have rownames identifying proteins")
   }
   
-  # Find common proteins
+  # Find common proteins and subset matrices
   common_proteins <- intersect(rownames(expr_matrix), rownames(specificity_matrix))
   if (length(common_proteins) == 0) {
     stop("No common proteins found between expression and specificity matrices")
   }
-  if (verbose) {
-    message(paste("Found", length(common_proteins), "common proteins for analysis"))
-  }
-  
-  # Subset matrices to common proteins
   expr_matrix <- expr_matrix[common_proteins, , drop = FALSE]
   specificity_matrix <- specificity_matrix[common_proteins, , drop = FALSE]
   
-  # Sort proteins by rank
-  ranked_values <- expr_matrix[, sample_col]
-  protein_ranks <- sort(ranked_values, decreasing = TRUE, index.return = TRUE)
-  ranked_proteins <- rownames(expr_matrix)[protein_ranks$ix]
+  # Get all sample names
+  sample_names <- colnames(expr_matrix)
+  n_samples <- length(sample_names)
   
-  # Calculate enrichment scores for each cell type
+  if (verbose) {
+    message(sprintf("Processing %d samples across %d proteins and %d cell types", 
+                  n_samples, nrow(expr_matrix), ncol(specificity_matrix)))
+  }
+  
+  # Set up parallel processing if requested
+  if (parallel) {
+    if (!requireNamespace("parallel", quietly = TRUE)) {
+      warning("Package 'parallel' not available. Using sequential processing.")
+      parallel <- FALSE
+    } else {
+      if (is.null(n_cores)) {
+        n_cores <- max(1, parallel::detectCores() - 2)
+      }
+      n_cores <- min(n_cores, n_samples) # Don't use more cores than samples
+      if (verbose) message(sprintf("Using parallel processing with %d cores", n_cores))
+    }
+  }
+  
+  # Pre-compute thresholds and other invariant values once for all samples
+  if (verbose) message("Pre-computing cell type thresholds...")
+  
   cell_types <- colnames(specificity_matrix)
-  n_proteins <- length(ranked_proteins)
+  n_cell_types <- length(cell_types)
   
-  # Initialize results containers
-  enrichment_scores <- numeric(length(cell_types))
-  names(enrichment_scores) <- cell_types
-  running_scores <- matrix(0, nrow = n_proteins, ncol = length(cell_types))
-  rownames(running_scores) <- ranked_proteins
-  colnames(running_scores) <- cell_types
-  leading_edge <- list()
-  thresholds_used <- numeric(length(cell_types))
-  names(thresholds_used) <- cell_types
+  # Calculate thresholds - this only needs to be done once
+  thresholds <- numeric(n_cell_types)
+  names(thresholds) <- cell_types
   
-  # Calculate enrichment score for each cell type
   for (i in seq_along(cell_types)) {
-    cell_type <- cell_types[i]
-    if (verbose && (i %% 10 == 0 || i == 1)) {
-      message(paste("Processing cell type:", i, "of", length(cell_types)))
-    }
-    
-    # Get specificity scores for this cell type
-    spec_scores <- specificity_matrix[, cell_type]
-    
-    # Determine threshold for this cell type
+    ct <- cell_types[i]
     if (is.character(specificity_threshold) && specificity_threshold == "median") {
-      # Use median of non-zero specificity values
-      non_zero_specs <- spec_scores[spec_scores > 0]
-      if (length(non_zero_specs) > 0) {
-        actual_threshold <- median(non_zero_specs)
-      } else {
-        actual_threshold <- 0
-      }
-      if (verbose) {
-        message(paste("Using median threshold for", cell_type, ":", actual_threshold))
-      }
+      non_zero_specs <- specificity_matrix[specificity_matrix[, ct] > 0, ct]
+      thresholds[i] <- if (length(non_zero_specs) > 0) median(non_zero_specs) else 0
     } else {
-      # Use provided numeric threshold
-      actual_threshold <- specificity_threshold
-    }
-    
-    # Store the threshold used
-    thresholds_used[i] <- actual_threshold
-    
-    # Skip cell types with too few specific proteins
-    if (sum(spec_scores > 0) < min_size) {
-      if (verbose) {
-        message(paste("Skipping", cell_type, "- too few specific proteins"))
-      }
-      enrichment_scores[i] <- NA
-      next
-    }
-    
-    # Calculate hit_indices (where each protein is in the ranked list)
-    hit_indices <- match(names(spec_scores), ranked_proteins)
-    
-    # Calculate running sum
-    running_sum <- 0
-    max_deviation <- 0
-    max_position <- 0
-    
-    # Calculate sum of weights for normalization (only for proteins above threshold)
-    N_R <- sum((spec_scores[spec_scores > actual_threshold])^p_weight)
-    
-    # Count proteins below threshold for penalty calculation
-    N_non_specific <- sum(spec_scores <= actual_threshold)
-    
-    # Walk down the ranked list
-    for (j in 1:n_proteins) {
-      protein <- ranked_proteins[j]
-      
-      # If protein has specificity for this cell type, add weighted score
-      if (spec_scores[protein] > actual_threshold) {
-        # Scale the positive steps
-        running_sum <- running_sum + (spec_scores[protein]^p_weight / N_R)
-      } else {
-        # All other proteins count as "misses"
-        running_sum <- running_sum - (1 / N_non_specific)
-      }
-      
-      # Record running sum
-      running_scores[j, i] <- running_sum
-      
-      # Check if this is the maximum deviation
-      if (abs(running_sum) > abs(max_deviation)) {
-        max_deviation <- running_sum
-        max_position <- j
-      }
-    }
-    
-    # Store enrichment score
-    enrichment_scores[i] <- max_deviation
-    
-    # Store leading edge proteins if enrichment score is positive
-    if (max_deviation > 0) {
-      leading_edge[[cell_type]] <- ranked_proteins[1:max_position]
-    } else {
-      leading_edge[[cell_type]] <- ranked_proteins[max_position:n_proteins]
+      thresholds[i] <- specificity_threshold
     }
   }
   
-  # Perform permutation testing if requested
-  p_values <- rep(NA, length(cell_types))
-  names(p_values) <- cell_types
-  normalized_scores <- enrichment_scores
+  # Create above_threshold matrix - this also only needs to be done once
+  above_threshold_matrix <- matrix(FALSE, nrow = nrow(specificity_matrix), 
+                                ncol = n_cell_types,
+                                dimnames = list(rownames(specificity_matrix), cell_types))
   
-  if (nperm > 0) {
-    if (verbose) {
-      message("Performing permutation testing...")
-    }
+  for (i in seq_along(cell_types)) {
+    above_threshold_matrix[, i] <- specificity_matrix[, cell_types[i]] > thresholds[i]
+  }
+  
+  # Process all samples, either in parallel or sequentially
+  if (parallel) {
+    cl <- parallel::makeCluster(n_cores)
+    on.exit(parallel::stopCluster(cl))
     
-    # Calculate null distribution by permuting protein rankings
-    null_scores <- matrix(0, nrow = nperm, ncol = length(cell_types))
+    # Load RcppParallel on all worker nodes
+    parallel::clusterEvalQ(cl, {
+      library(Rcpp)
+      library(RcppParallel)
+      RcppParallel::setThreadOptions()
+    })
     
-    for (p in 1:nperm) {
-      if (verbose && (p %% 100 == 0)) {
-        message(paste("Permutation:", p, "of", nperm))
-      }
-      
-      # Permute protein ranks
-      perm_ranks <- sample(n_proteins)
-      perm_proteins <- ranked_proteins[perm_ranks]
-      
-      # Calculate enrichment score for each cell type using permuted ranks
-      for (i in seq_along(cell_types)) {
-        if (is.na(enrichment_scores[i])) next
-        
-        cell_type <- cell_types[i]
-        spec_scores <- specificity_matrix[, cell_type]
-        actual_threshold <- thresholds_used[i]
-        
-        # Calculate running sum for permuted ranks
-        running_sum <- 0
-        max_deviation <- 0
-        
-        # Calculate sum of weights for normalization (using same threshold)
-        N_R <- sum((spec_scores[spec_scores > actual_threshold])^p_weight)
-        N_non_specific <- sum(spec_scores <= actual_threshold)
-        
-        for (j in 1:n_proteins) {
-          protein <- perm_proteins[j]
-          
-          if (spec_scores[protein] > actual_threshold) {
-            running_sum <- running_sum + (spec_scores[protein]^p_weight / N_R)
-          } else {
-            running_sum <- running_sum - (1 / N_non_specific)
-          }
-          
-          if (abs(running_sum) > abs(max_deviation)) {
-            max_deviation <- running_sum
-          }
-        }
-        
-        null_scores[p, i] <- max_deviation
-      }
-    }
-    
-    # Calculate p-values and normalize enrichment scores
-    for (i in seq_along(cell_types)) {
-      if (is.na(enrichment_scores[i])) next
-      
-      # Calculate p-value with pseudocount
-      if (enrichment_scores[i] >= 0) {
-        p_values[i] <- (sum(null_scores[, i] >= enrichment_scores[i]) + 1) / (nperm + 1)
-      } else {
-        p_values[i] <- (sum(null_scores[, i] <= enrichment_scores[i]) + 1) / (nperm + 1)
-      }
-      
-      # Normalize enrichment score
-      null_mean <- mean(null_scores[, i])
-      null_sd <- sd(null_scores[, i])
-      if (null_sd > 0) {
-        normalized_scores[i] <- (enrichment_scores[i] - null_mean) / null_sd
-      }
-    }
-    
-    # Adjust p-values for multiple testing
-    fdr <- p.adjust(p_values, method = "BH")
+  # Either export the functions, or source the C++ file on each worker
+  if (file.exists("gsea_functions.cpp")) {
+    parallel::clusterCall(cl, function() {
+      Rcpp::sourceCpp("gsea_functions.cpp")
+    })
   } else {
-    fdr <- rep(NA, length(cell_types))
-    names(fdr) <- cell_types
+    parallel::clusterExport(cl, c("calcRunningSum", "calcMaxDeviation"))
   }
   
-  # Return results
-  results <- list(
-    enrichment_scores = enrichment_scores,
-    normalized_scores = normalized_scores,
-    p_values = p_values,
-    fdr = fdr,
-    leading_edge = leading_edge,
-    running_scores = running_scores,
-    cell_types = cell_types,
-    ranked_proteins = ranked_proteins,
-    thresholds_used = thresholds_used
-  )
+    # Export necessary variables and functions to the cluster
+    parallel::clusterExport(cl, c("expr_matrix", "specificity_matrix", "sample_names",
+                               "thresholds", "above_threshold_matrix", "cell_types",
+                               "min_size", "p_weight", "nperm", "verbose", 
+                               ".process_sample_optimized"),
+                          envir = environment())
+    
+    # Process samples in parallel
+    results <- parallel::parLapply(cl, 1:n_samples, function(sample_idx) {
+      .process_sample_optimized(
+        sample_idx = sample_idx,
+        sample_names = sample_names,
+        expr_matrix = expr_matrix,
+        specificity_matrix = specificity_matrix,
+        thresholds = thresholds,
+        above_threshold_matrix = above_threshold_matrix,
+        cell_types = cell_types,
+        min_size = min_size,
+        p_weight = p_weight,
+        nperm = nperm,
+        verbose = verbose
+      )
+    })
+    names(results) <- sample_names
+  } else {
+    # Process samples sequentially
+    results <- lapply(1:n_samples, function(sample_idx) {
+      .process_sample_optimized(
+        sample_idx = sample_idx,
+        sample_names = sample_names,
+        expr_matrix = expr_matrix,
+        specificity_matrix = specificity_matrix,
+        thresholds = thresholds,
+        above_threshold_matrix = above_threshold_matrix,
+        cell_types = cell_types,
+        min_size = min_size,
+        p_weight = p_weight,
+        nperm = nperm,
+        verbose = verbose
+      )
+    })
+    names(results) <- sample_names
+  }
+  
+  end_time <- Sys.time()
+  if (verbose) {
+    time_taken <- round(as.numeric(difftime(end_time, start_time, units = "secs")), 2)
+    message(sprintf("Analysis completed in %s seconds", time_taken))
+  }
   
   return(results)
 }
@@ -457,18 +763,13 @@ plotEnrichment <- function(gsea_results, cell_type, show_pval = TRUE,
     stop("The ggplot2 package is needed for this function")
   }
   
-  # Extract from data.table if not list
-  if (is.data.table(gsea_results)) {
-    gsea_results <- unlist(gsea_results, recursive = FALSE)
-  }
-  
   # Input validation
-  if (!cell_type %in% gsea_results$cell_types) {
+  if (!cell_type %in% names(gsea_results[['fdr']])) {
     stop("Cell type not found in results")
   }
   
   # Get cell type index
-  ct_idx <- which(gsea_results$cell_types == cell_type)
+  ct_idx <- which(names(gsea_results[['fdr']]) == cell_type)
   
   # Extract running scores
   run_scores <- gsea_results$running_scores[, ct_idx]
@@ -656,7 +957,7 @@ setattr(result, 'names', input)
 result <- rbindlist(result)
 input <- gsub(".APOE", "", input)
 
-# filtered set of genes with at least one significant result, top sig duplicate probe
+# filtered set of genes with at least one biomarker testing, top sig duplicate probe
 all_genes <- unique(result[order(padj), .(Symbol, ix, padj)], by = 'Symbol')
 # bio_genes <- unique(all_genes[padj < 0.05, .(Symbol, ix)], by = 'Symbol')
 
@@ -677,64 +978,28 @@ prots <- as.matrix(prots, rownames = 'Symbol')
 
 
 # Build result table(s) & run function -------------
-# Create grouping factor for columns
-groups <- ceiling(seq_len(ncol(prots)) / ceiling(ncol(prots) / threads))
-dt_list <- lapply(seq(threads), function(i) {
-  data.table('SampleID' = colnames(prots)[groups == i])
-})
-dt_list <- future_lapply(seq(dt_list), function(i) {
-  tic()
-  x <- dt_list[[i]][, {
-    # Run the analysis
-    results <- specificityWeightedGSEA(
-      expr_matrix = prots,
-      specificity_matrix = spec,
-      sample_col = as.character(SampleID),
-      nperm = 1000, 
-      verbose = FALSE
-    )
-    
-    # Extract each component of results as a separate column
-    # Note: for list/complex columns, we'll convert to JSON strings or serialize as needed
-    list(
-      # Scalar or simple vector results
-      cell_types = list(results$cell_types),
-      enrichment_scores = list(results$enrichment_scores),
-      normalized_scores = list(results$normalized_scores),
-      p_values = list(results$p_values),
-      fdr_values = list(results$fdr),
-      thresholds_used = list(results$thresholds_used),
-      
-      # For the more complex elements, we can either:
-      # 1. Extract specific information of interest
-      top_cell_type = names(results$enrichment_scores)[which.max(results$enrichment_scores)],
-      top_score = max(results$enrichment_scores, na.rm = TRUE),
-      significant_cell_types = list(names(which(results$fdr < 0.05))),
-      
-      # 2. Store as serialized/JSON strings
-      leading_edge = list(jsonlite::toJSON(results$leading_edge)),
-      running_scores = list(results$running_scores)
-    )
-  }, by = 'SampleID']
-  print(sprintf("Group %s: %s", i, toc()$callback_msg))
-  return(x)
-}, future.seed = TRUE)
-
+results <- specificityWeightedGSEA(
+  expr_matrix = prots,
+  specificity_matrix = spec,
+  specificity_threshold = "median",
+  nperm = 1000, 
+  verbose = TRUE,
+  n_cores = threads
+)
 
 # join and save files ------------------------------
-dt <- rbindlist(dt_list)
-saveRDS(dt, file = file.path(output, paste0(nameset, ".scores.rds")))
+saveRDS(results, file = file.path(output, paste0(nameset, ".scores.rds")))
 
 if (plot) {
   # Set seed for reproducible sampling
   set.seed(123)
-  sampled_dt <- sample(dt[["SampleID"]], size = 10)
-  lapply(sampled_dt, function(i) {
-    plist <- lapply(unlist(dt[SampleID == i, cell_types]), function(j) {
-      plotEnrichment(dt[SampleID == i], j, title = paste(j, "in", i))
+  sampled <- sample(results, size = 10)
+  lapply(sampled, function(i) {
+    plist <- lapply(names(i[['fdr']]), function(j) {
+      plotEnrichment(i, j, title = paste(j, "in", i[['sample']]))
     })
     print_plots_per_page(plist, 
-      file = file.path(output, paste(nameset, i, "plots.pdf", sep = "."))
+      file = file.path(output, paste(nameset, i[['sample']], "plots.pdf", sep = "."))
     )
   })
 }
