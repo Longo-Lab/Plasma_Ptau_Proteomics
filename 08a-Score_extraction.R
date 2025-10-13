@@ -3,7 +3,7 @@
 #'
 #' Script name: 08a-Score_extraction.R
 #'
-#' Version: 0.0.2
+#' Version: 0.0.3
 #'
 #' Purpose of script: Get celltype matricies from results for Score celltype 
 #'  
@@ -19,6 +19,7 @@
 #'
 #' Notes:
 #'   Updates:
+#'   v0.0.3 - updating for c version of 8 to handle new data structure
 #'   v0.0.2 - bugfixes for outpath typos and help menu
 #'   
 #'   
@@ -107,7 +108,7 @@ stat <- strsplit(stat, ",")[[1]]
 #' This function extracts values from a nested list column in a data.table and
 #' reshapes the data to a wide format where the names become column headers.
 #'
-#' @param dt A data.table containing nested list columns
+#' @param results A results object containing listed samples
 #' @param id_col Character string specifying the ID column name (e.g., "SampleID")
 #' @param name_col Character string specifying the column containing names that will
 #'   become column headers in the result (e.g., "cell_types")
@@ -122,96 +123,83 @@ stat <- strsplit(stat, ",")[[1]]
 #' @importFrom data.table data.table dcast :=
 #'
 #' @examples
-#' \dontrun{
-#' # Extract enrichment scores
-#' scores_dt <- extract_nested_results(
-#'   results_dt,
-#'   id_col = "SampleID", 
-#'   name_col = "cell_types", 
-#'   value_col = "enrichment_scores"
+#' # Create example expression dataset (proteins x samples)
+#' expr_data <- matrix(
+#'   c(5.2, 3.8, 0.5, 2.1, 4.5, 0.2, 3.3, 1.2,  # Sample 1
+#'     4.8, 4.2, 0.4, 1.9, 5.1, 0.3, 3.5, 1.0,  # Sample 2
+#'     6.1, 3.5, 0.6, 2.5, 4.0, 0.1, 3.8, 0.8), # Sample 3
+#'   ncol = 3,
+#'   byrow = FALSE,
+#'   dimnames = list(
+#'     c("ProteinA", "ProteinB", "ProteinC", "ProteinD", 
+#'       "ProteinE", "ProteinF", "ProteinG", "ProteinH"),
+#'     c("Sample1", "Sample2", "Sample3")
+#'   )
 #' )
 #' 
-#' # Extract p-values with different column names
-#' pval_dt <- extract_nested_results(
-#'   other_results,
-#'   id_col = "PatientID", 
-#'   name_col = "gene_sets", 
-#'   value_col = "p_values"
+#' # Create example cell type specificity dataset (proteins x cell types)
+#' spec_data <- matrix(
+#'   c(0.9, 0.1, 0.0, 0.3, 0.1, 0.0, 0.8, 0.2,  # Neuron
+#'     0.1, 0.8, 0.0, 0.2, 0.7, 0.1, 0.0, 0.4,  # Astrocyte
+#'     0.0, 0.2, 0.9, 0.5, 0.1, 0.8, 0.0, 0.3), # Microglia
+#'   ncol = 3,
+#'   byrow = FALSE,
+#'   dimnames = list(
+#'     c("ProteinA", "ProteinB", "ProteinC", "ProteinD",
+#'       "ProteinE", "ProteinF", "ProteinG", "ProteinH"),
+#'     c("Neuron", "Astrocyte", "Microglia")
+#'   )
 #' )
+#' 
+#' # Run analysis with minimal permutations for the example
+#' \dontrun{
+#' results <- specificityWeightedGSEA_optimized(
+#'   expr_matrix = expr_data,
+#'   specificity_matrix = spec_data,
+#'   nperm = 100,  # Reduced for quick example
+#'   specificity_threshold = "median",
+#'   verbose = TRUE
+#' )
+#' 
+#' # Access results for a specific sample
+#' sample1_results <- results[["Sample1"]]
+#' 
+#' # Extract enrichment scores for all samples
+#' all_scores <- sapply(results, function(x) x$enrichment_scores)
+#' 
+#' # Find significant cell types (FDR < 0.05) for each sample
+#' significant_cell_types <- lapply(results, function(x) {
+#'   cell_types <- names(x$fdr)[x$fdr < 0.05]
+#'   if(length(cell_types) > 0) cell_types else "None"
+#' })
+#' 
+#' # Extract the leading edge proteins for a specific cell type in Sample1
+#' if("Neuron" %in% names(results[["Sample1"]]$leading_edge)) {
+#'   neuron_proteins <- results[["Sample1"]]$leading_edge[["Neuron"]]
+#'   print(paste("Leading edge proteins for Neuron in Sample1:", 
+#'              paste(neuron_proteins, collapse=", ")))
+#' }
 #' }
 #'
 #' @export
-extract_nested_results <- function(dt, id_col, name_col, value_col) {
-  # Input validation
-  if (!data.table::is.data.table(dt)) {
-    stop("Input must be a data.table")
-  }
-  
-  req_cols <- c(id_col, name_col, value_col)
-  missing_cols <- setdiff(req_cols, names(dt))
-  if (length(missing_cols) > 0) {
-    stop(paste("Missing required columns:", paste(missing_cols, collapse = ", ")))
-  }
-  
-  # Create a formula for dcast as string and then convert to formula
-  formula_str <- paste(id_col, "~ name")
-  cast_formula <- as.formula(formula_str)
-  
-  # Extract data in long format using data.table syntax
-  long_result <- dt[, {
-    # Get the names and values from specified columns
-    names_list <- get(name_col)
-    values_list <- get(value_col)
-    
-    # Handle both when these are plain vectors or nested lists
-    if (is.list(names_list) && !is.data.frame(names_list)) {
-      names_vec <- unlist(names_list)
-    } else {
-      names_vec <- names_list
-    }
-    
-    if (is.list(values_list) && !is.data.frame(values_list)) {
-      values_vec <- unlist(values_list)
-    } else {
-      values_vec <- values_list
-    }
-    
-    # Check for valid data
-    if (length(names_vec) != length(values_vec)) {
-      warning(paste("Length mismatch between names and values for ID:", get(id_col)))
-      return(data.table())
-    }
-    
-    data.table(name = names_vec, value = values_vec)
-  }, by = id_col]
-  
-  # If we have no valid data, return empty result with structure
-  if (nrow(long_result) == 0) {
-    return(data.table::data.table(setNames(list(character()), id_col)))
-  }
-  
-  # Cast from long to wide format
-  result_dt <- data.table::dcast(long_result, cast_formula, value.var = "value", fill = NA)
-  
-  return(result_dt)
+extract_simple_results <- function(x, id_col, name_col, value_col) {
 }
 
 
 
 # Main -----------------------------------------------------------------------
 # results file location
-result <- readRDS(file.path(inpath, paste0(nameset, ".scores.rds")))
-
+results <- readRDS(file.path(inpath, paste0(nameset, ".scores.rds")))
 
 # loop through requested stats
 lapply(stat, function(i) {
-  x <- extract_nested_results(result, 
-    id_col = "SampleID",
-    name_col = "cell_types", 
-    value_col = i
+  fwrite(
+    x = data.table(
+      t(sapply(results, function(x) x[[i]])), 
+      keep.rownames = "SampleID"
+    ),
+    file = file.path(outpath, paste(nameset, i, "csv", sep = "."))
   )
-  
-  fwrite(x, file = file.path(outpath, paste(nameset, i, "csv", sep = ".")))
 })
 
 
