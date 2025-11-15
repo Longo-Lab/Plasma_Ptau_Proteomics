@@ -3,7 +3,7 @@
 #'
 #' Script name: 02-Clustering.R
 #'
-#' Version: 0.0.2
+#' Version: 0.0.3
 #'
 #' Purpose of script: heatmaps and clustering of individuals by scores
 #'
@@ -17,6 +17,8 @@
 #' ---------------------------
 #'
 #' Notes:
+#'   v0.0.3 - adding in eigengene flexibility
+#'
 #'
 #'
 #' ---------------------------
@@ -48,6 +50,13 @@ option_list <- list(
     c("-n", "--nameset"),
     type = "character",
     help = "Name of project [default: Nameset of input]"
+  ),
+  make_option(
+    c("-p", "--dat-prefix"),
+    dest = "dat_prefix",
+    type = "character",
+    default = "dataProt_SS-205063",
+    help = "Prefix of project dataset for filenames [default: Nameset of input]"
   ),
   make_option(
     c("-k", "--kmeans"),
@@ -82,6 +91,7 @@ fields <- c(
   "input",
   "score",
   "nameset",
+  "dat_prefix",
   "output",
   "data_path",
   "kmeans"
@@ -103,9 +113,11 @@ for (field in fields) {
 # split input variables and add suffixes if multiple datasets
 score <- strsplit(score, ",")[[1]]
 if (length(score) > 1) {
+  # split scores and values into list of lists
   input <- strsplit(input, "\\|")[[1]]
   input <- lapply(input, function(i) strsplit(i, ",")[[1]])
-  breaks <- sapply(input, length) # breaks are for spacing heatmap
+  # define breaks in heatmap by rep score names for lengths of lists
+  breaks <- sapply(input, length) 
   breaks <- unlist(
     mapply(
       FUN = function(x, y) rep(x, y), 
@@ -115,6 +127,7 @@ if (length(score) > 1) {
       USE.NAMES = FALSE
     )
   )
+  # collapse for rownames
   input <- unlist(
     lapply(seq(input), function(i) paste(input[[i]], score[i], sep = "."))
   )
@@ -204,20 +217,25 @@ mergeWithSuffix <- function(x, y, by, suffixes = NULL, ...) {
 
 # Main ------------------------------------------
 # load overall base file
-result <- fread("../../dataProt_SS-205063.merged.QC.csv")
+result <- fread(paste0("../../", dat_prefix, ".merged.QC.csv"))
 a <- result[, 1:27]
 
 # Map in PCs assumes your primary data table exists 
 x <- fread("../../genomic/mypcair.PCs.csv", colClasses = c(PIDN = "character"))
 a <- merge(a, x, by = "PIDN")
 
+# eigen_import <- function(dat_prefix, score, tail) {
+  
+# }
+
 # Map in Scores assumes your primary data table exists 
+tail <- "normalized_scores.csv"
+score_val <- "NES"
+scor <- NULL
 if (length(score) > 1) {
   lapply(score, function(i){
     x <- fread(
-      file.path(data_path, 
-        paste("dataProt_SS-205063", i, "normalized_scores.csv", sep = ".")
-      ), 
+      file = file.path(data_path, paste(dat_prefix, i, tail, sep = ".")), 
       colClasses = c(SampleID = "character")
     )
     assign(
@@ -228,9 +246,7 @@ if (length(score) > 1) {
   })
 } else {
   x <- fread(
-    file.path(data_path, 
-      paste("dataProt_SS-205063", score, "normalized_scores.csv", sep = ".")
-    ), 
+    file = file.path(data_path, paste(dat_prefix, score, tail, sep = ".")), 
     colClasses = c(SampleID = "character")
   )
   a <- merge(a, x, by = "SampleID")
@@ -277,7 +293,7 @@ if (length(score) > 1) {
 } else {
   b[, Score := factor(Score, levels = sort(unique(Score)))]
 }
-setnames(b, "value", "NES")
+setnames(b, "value", score_val)
 
 # for this plot, reclassify MCI-AD as MCI
 b[, Diagnosis_group := gsub("MCI-AD", "MCI", Diagnosis_group)]
@@ -290,7 +306,7 @@ annots <- data.frame(
 )
 
 # keep just the complete.cases (drop cols)
-mat <- as.matrix(dcast(b, Score ~ PIDN, value.var = 'NES'), rownames = 'Score')
+mat <- as.matrix(dcast(b, Score ~ PIDN, value.var = score_val), rownames = 'Score')
 mat <- mat[, colSums(is.na(mat)) == 0]
 mat <- t(scale(t(mat)))  # Transpose twice to scale rows instead of columns
 mat <- mat[, match(rownames(annots), colnames(mat))]
@@ -322,7 +338,7 @@ set.seed(3)
 # Convert your pheatmap code to ComplexHeatmap
 hm <- Heatmap(
   mat,
-  name = "NES score clustering across cohort",
+  name = "Score clustering across cohort",
   cluster_columns = TRUE,
   column_dend_height = unit(4, "cm"), 
   column_km = kval,
@@ -338,7 +354,7 @@ hm <- Heatmap(
   ),
   # Set legend columns parameter
   heatmap_legend_param = list(
-    title = "Scaled NES", 
+    title = paste("Scaled", score_val), 
     legend_width = unit(4, "cm"),
     nrow = 2  # Number of rows in the legend (creates columns)
   )
