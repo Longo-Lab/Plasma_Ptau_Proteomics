@@ -3,7 +3,7 @@
 ##
 ## Script name: 03-Protein_QC.R
 ##
-## Version: 0.0.6
+## Version: 0.0.7
 ##
 ## Purpose of script: Prepare LnPlasmaPTau data for gene set analyses
 ##
@@ -44,6 +44,7 @@ library(patchwork)
 library(qqman)
 library(optparse)
 library(tools)
+library(Cairo)
 
 
 # Nameset helper function
@@ -417,6 +418,100 @@ my_volcano <- function(x, titl = NULL, sub = NULL, thresh = 0.05, lfc = 0, lfc_c
   return(combined)
 }
 
+#' Plot gprofiler enrichment results for multiple gene sets
+#'
+#' Creates three gostplot-style Manhattan plots showing pathway enrichment for 
+#' different gene sets from a gprofiler analysis.
+#'
+#' @param g List. The gprofiler object returned from gost() containing a 
+#'   'result' component with enrichment results.
+#' @param n_labels Integer. Number of max.overlaps to allow for labels. Higher is more.
+#'   Default is 5.
+#'
+#' @return A named list of three ggplot objects:
+#'   \describe{
+#'     \item{all}{Plot for all significant proteins}
+#'     \item{updown}{Plot comparing upregulated vs downregulated proteins}
+#'     \item{topbottom}{Plot comparing top 20 vs bottom 20 proteins}
+#'   }
+#'
+#' @details
+#' The function applies the following filters to enrichment results:
+#' \itemize{
+#'   \item Term size < 1500
+#'   \item Intersection size > 3
+#' }
+#'
+#' @examples
+#' \dontrun{
+#' plots <- plot_gprofiler_sets(g, n_labels = 10)
+#' plots$all
+#' plots$updown
+#' plots$topbottom
+#' }
+#'
+#' @export
+plot_gprofiler_sets <- function(g, n_labels = 5) {
+  require("gprofiler2")
+  require("ggplot2")
+  require("ggrepel")
+  require("data.table")
+  
+  # Filter results
+  dt <- as.data.table(g$result)[
+    term_size < 1500 & 
+    intersection_size > 3
+  ]
+  
+  # Create filtered g objects for each plot
+  g_all <- g
+  g_all$result <- dt[query == "all"]
+  
+  g_updown <- g
+  g_updown$result <- dt[query %in% c("up", "down")][order(-query, p_value)]
+  
+  g_topbottom <- g
+  g_topbottom$result <- dt[query %in% c("top20", "bottom20")][order(-query, p_value)]
+  
+  # Plot 1: all
+  p1 <- gostplot(g_all, interactive = FALSE) +
+    geom_text_repel(
+      mapping = aes(label = term_name), 
+      family = "Arial", 
+      # nudge_y = 4,
+      force = 15, 
+      force_pull = 0.01,
+      max.overlaps = 5,
+      ylim = c(10, NA)
+    )
+  
+  # Plot 2: up/down
+  p2 <- gostplot(g_updown, interactive = FALSE) +
+    geom_text_repel(
+      mapping = aes(label = term_name), 
+      family = "Arial", 
+      # nudge_y = 4,
+      force = 15, 
+      force_pull = 0.01,
+      max.overlaps = 5,
+      ylim = c(10, NA)
+    )
+  
+  # Plot 3: top20/bottom20
+  p3 <- gostplot(g_topbottom, interactive = FALSE) +
+    geom_text_repel(
+      mapping = aes(label = term_name), 
+      family = "Arial", 
+      # nudge_y = 4,
+      force = 15, 
+      force_pull = 0.01,
+      max.overlaps = 5,
+      ylim = c(10, NA)
+    )
+  
+  return(list(all = p1, updown = p2, topbottom = p3))
+}
+
 # Main ------------------------------------------
 # Load assocaition table
 a <- fread(input)
@@ -590,9 +685,10 @@ sets <- list(
 g <- gost(
   query = sets, 
   organism = "hsapiens", 
-  ordered_query = TRUE, 
+  ordered_query = FALSE, 
   evcodes = TRUE,
-  custom_bg = unique(c[!is.na(GENE), GENE])
+  custom_bg = unique(c[!is.na(GENE), GENE]),
+  sources = c("GO", "KEGG", "REAC", "WP")
 )
 # write to file
 if (is.list(g$result)) {
@@ -603,3 +699,18 @@ if (is.list(g$result)) {
 }
 
 # plot with labels
+plots <- plot_gprofiler_sets(g, n_labels = 10)
+
+CairoPDF(
+  file = file.path(output, paste(nameset, "gprofiler_plots.pdf", sep=".")), 
+  onefile = TRUE, 
+  paper = "USr", 
+  width = 11, 
+  height = 8.5,
+)
+plots$all
+plots$updown
+plots$topbottom
+dev.off()
+
+
