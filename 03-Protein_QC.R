@@ -3,7 +3,7 @@
 ##
 ## Script name: 03-Protein_QC.R
 ##
-## Version: 0.0.7
+## Version: 0.0.8
 ##
 ## Purpose of script: Prepare LnPlasmaPTau data for gene set analyses
 ##
@@ -319,12 +319,14 @@ my_volcano <- function(x, titl = NULL, sub = NULL, thresh = 0.05, lfc = 0, lfc_c
     x = lfc_col,
     y = "pval",
     lab = x_main[["Target"]],
+    xlim = c(min(x_main[[lfc_col]], na.rm = TRUE) * 1.1, max(x_main[[lfc_col]], na.rm = TRUE) * 1.1),
+    ylim = c(0, max(-log10(x_main[["pval"]]), na.rm = TRUE) * 1.25),
     selectLab = x_main[abs(get(lfc_col)) > lfc & padj < thresh, Target],
     labFace = "bold",
     drawConnectors = TRUE,
     widthConnectors = 0.25,
-    max.overlaps = 100,
-    maxoverlapsConnectors = 100,  # Changed: allow all connectors
+    max.overlaps = 40,
+    # maxoverlapsConnectors = 100,  # Changed: allow all connectors
     arrowheads = FALSE, 
     xlab = lfc_col,
     title = NULL,
@@ -570,7 +572,7 @@ ggsave(
   plot = my_volcano(
     c,
     titl = sprintf("Protein associations with %s", basename(output)),
-    sub = "dichotomous extreme Q4 vs Q1",
+    sub = NULL,
     thresh = 0.05,
     lfc = 0,
     lfc_col = plot_col
