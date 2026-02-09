@@ -3,7 +3,7 @@
 ##
 ## Script name: 03-Protein_QC.R
 ##
-## Version: 0.0.8
+## Version: 0.0.9
 ##
 ## Purpose of script: Prepare LnPlasmaPTau data for gene set analyses
 ##
@@ -481,8 +481,8 @@ plot_gprofiler_sets <- function(g, n_labels = 5) {
       mapping = aes(label = term_name), 
       family = "Arial", 
       # nudge_y = 4,
-      force = 15, 
-      force_pull = 0.01,
+      force = 100, 
+      force_pull = 0.0001,
       max.overlaps = 5,
       ylim = c(10, NA)
     )
@@ -493,8 +493,8 @@ plot_gprofiler_sets <- function(g, n_labels = 5) {
       mapping = aes(label = term_name), 
       family = "Arial", 
       # nudge_y = 4,
-      force = 15, 
-      force_pull = 0.01,
+      force = 100, 
+      force_pull = 0.0001,
       max.overlaps = 5,
       ylim = c(10, NA)
     )
@@ -505,8 +505,8 @@ plot_gprofiler_sets <- function(g, n_labels = 5) {
       mapping = aes(label = term_name), 
       family = "Arial", 
       # nudge_y = 4,
-      force = 15, 
-      force_pull = 0.01,
+      force = 100, 
+      force_pull = 0.0001,
       max.overlaps = 5,
       ylim = c(10, NA)
     )
