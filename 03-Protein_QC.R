@@ -532,22 +532,29 @@ a[, exclude := NULL]  # Remove the exclude column
 # handle pvals for quasi-complete separation that would be NAs
 a[flag == "separated" & is.na(pval), pval := 0]
 
+# padjust
+a[, padj := p.adjust(pval, method = "fdr")]
+a[, pbonf := p.adjust(pval, method = "bonferroni")]
+
 # map to reference key
 b <- fread(ref)
 b <- b[Organism == "Human" & Type == "Protein"]
 b[, c("Organism", "Units", "Type", "EntrezGeneSymbol_v2") := NULL]
+
+# Source - https://stackoverflow.com/q/78808739
+# Posted by dragon951, modified by community. See post 'Timeline' for change history
+# Retrieved 2026-03-13, License - CC BY-SA 4.0
+
+# Explode complex columns with multiple genes/prot entries
+mycol <- c("EntrezGeneID", "EntrezGeneSymbol", "UniProt")
+b <- b[, lapply(.SD, \(x) unlist(tstrsplit(x, "\\|"))), 
+  by = c(names(b)[!names(b) %in% mycol]), 
+  .SDcols = mycol
+]
 c <- merge(a, b, by.x = "ix", by.y = "Key_2")
 
-# padjust and clean up (total set of human protein probes)
-c[, padj := p.adjust(pval, method = "fdr")]
-c[, pbonf := p.adjust(pval, method = "bonferroni")]
+# clean up (total set of human protein probes)
 c <- c[EntrezGeneSymbol != ""]
-
-# fix piped rows of multiple NCBI IDs (explode to multiple rows)
-c$EntrezGeneID <- gsub("\\s+", "|", c$EntrezGeneID, perl = TRUE)
-# c$EntrezGeneID = sub("\\|.*$", "", c$EntrezGeneID) # take only the first NCBI_ID in the row
-cols <- names(c)[names(c) != "EntrezGeneID"]
-c <- c[, .(EntrezGeneID = tstrsplit(EntrezGeneID, "\\|")), by = cols]
 c$EntrezGeneID <- as.integer(c$EntrezGeneID)
 
 # drop lower duplicates, use pval then magnitude beta
@@ -564,7 +571,7 @@ c <- convertGeneSymbol(c,
 fwrite(c, file = file.path(output, paste(nameset, "csv", sep = ".")))
 
 # drop failed for the remainder
-c <- c[flag != "failed"]
+c <- c[flag != "failed" | is.na(flag)]
 
 # plot volcanoes -----------------------------------------------
 # use cohen's d & val, jitter quasi box at the top

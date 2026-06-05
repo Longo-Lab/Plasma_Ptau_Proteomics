@@ -120,11 +120,11 @@ lapply(input, function(i) {
 lapply(input, function(i) {
   fwrite(result[dx == i
                 ][order(-t_stat)
-                  ][t_stat > quantile(t_stat, probs = 0.9)
+                  ][t_stat > quantile(t_stat, probs = 0.8)
                     ][, "GENE"], 
     quote = FALSE, 
     col.names = FALSE, 
-    file = paste0("top10_", i, ".txt")
+    file = paste0("top20_", i, ".txt")
   )
 })
 

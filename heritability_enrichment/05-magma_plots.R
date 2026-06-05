@@ -31,9 +31,9 @@ library(data.table)
 # file naming info
 today = format(Sys.Date(), '%Y%m%d')
 nameset = 'geneset_magma'
-f_names = c('padj', 'top10')
+f_names = c('padj', 'top20')
 f_prefix = 'AdultBrain'
-gwas = c('ALS', 'ALZ', 'FTD', 'LBD', 'PD', 'rAOO', 'BMI')
+gwas = c('ALS_g1000', 'ALZ_g1000', 'FTD_g1000', 'LBD_g1000', 'PD_g1000', 'rAOO_g1000', 'BMI_g1000')
 
 
 
@@ -66,7 +66,7 @@ fd[, c("GWAS", "DE") := tstrsplit(X, "\\.")]
 fd[, LOGP := -log10(P)]
 fd[, FDR := p.adjust(P, method = "fdr")]
 fd$GWAS <- factor(fd$GWAS, levels = gwas)
-# levels(fd$GWAS) <- gsub("_g1000", "", levels(fd$GWAS)) # drop hm3 label from plots
+levels(fd$GWAS) <- gsub("_g1000", "", levels(fd$GWAS)) # drop hm3 label from plots
 
 # all DE genes ----------------------------------------------------------------
 # pvalue matrices
@@ -83,7 +83,7 @@ fdr_mats = lapply(f_names, function(x){
 
 # Heatmap
 ht_list = heat(mats[[1]], fdr_mats[[1]], "#1b7837", "biomarker associated proteins (padj < 0.05)") +
-  heat(mats[[2]], fdr_mats[[2]], "#762a83", "biomarker associated proteins (top 10%)")
+  heat(mats[[2]], fdr_mats[[2]], "#762a83", "biomarker associated proteins (top 20%)")
 pdf(file = paste(today, nameset, "all_de", "heatmap.pdf", sep="."), width = 11, height = 7)
 draw(ht_list, ht_gap=unit(2, "cm"))
 dev.off()

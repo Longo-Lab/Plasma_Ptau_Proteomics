@@ -130,6 +130,8 @@ vars <- list(b = plot_col)
 bm = fread(input)
 pfilt = bm[!is.na(GENE) , .(b, GENE), env = vars][order(-b), env = vars]
 pfilt = pull(pfilt, plot_col, GENE)
+message(sprintf("Examining rankings for %s...", plot_col))
+head(pfilt)
 
 # load biodom reference table
 biodom <- full_join(

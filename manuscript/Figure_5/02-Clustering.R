@@ -32,6 +32,7 @@ library(patchwork)
 library(ComplexHeatmap)
 library(stringr)
 library(NbClust)
+library(dendextend)
 # library(pheatmap)
 
 # read in args
@@ -65,6 +66,11 @@ option_list <- list(
     help = "Apply kmeans clustering (NbClust) either k-value or 0 for best [default: %default]"
   ),
   make_option(
+    c("--final"),
+    default = "",
+    help = "When creating final plot, rotate parent dendrogram, i.e. 6,1,2,4,3,5 [default: %default]"
+  ),
+  make_option(
     c("-o", "--output"),
     type = "character",
     default = ".",
@@ -81,11 +87,6 @@ option_list <- list(
 
 args_list <- parse_args(OptionParser(option_list = option_list))
 
-# Nameset default case
-if(is.null(args_list$nameset)){
-  args_list$nameset <- file_path_sans_ext(basename(args_list$input))
-}
-
 # read in fields
 fields <- c(
   "input",
@@ -94,7 +95,8 @@ fields <- c(
   "dat_prefix",
   "output",
   "data_path",
-  "kmeans"
+  "kmeans",
+  "final"
 )
 
 # check for values
@@ -110,8 +112,30 @@ for (field in fields) {
   print(paste0(field, ": ", get(field)))
 }
 
-# split input variables and add suffixes if multiple datasets
+# examine scores and reject mixes with eigengene datasets
 score <- strsplit(score, ",")[[1]]
+if (all(!score %like% "eigengenes")) {
+  tail <- "normalized_scores.csv"
+  score_val <- "NES"
+  scor <- NULL
+} else if (all(score %like% "eigengenes")) {
+  tail <- "csv" 
+  score_val <- "Eigengene"
+  scor <- unlist(lapply(score, function(i) {
+    x <- fread(paste0("../../cell_type_prot/", i, ".terms.csv"))
+    scor <- x[, term]
+    if (length(score) > 1) {
+      names(scor) <- paste(x[, name], i, sep = ".")
+    } else {
+      names(scor) <- x[, name]
+    }
+    return(scor)
+  }))
+} else {
+  stop("Cannot mix eigengene and NES scores")
+}
+
+# split input variables and add suffixes if multiple datasets
 if (length(score) > 1) {
   # split scores and values into list of lists
   input <- strsplit(input, "\\|")[[1]]
@@ -136,6 +160,8 @@ if (length(score) > 1) {
   breaks = NULL
 }
 
+# setting up final dendrogram ordering
+ord <- as.integer(strsplit(final, ",")[[1]])
 
 # Functions ---------------------------
 #' Merge Two Data Tables with Custom Column Suffixes
@@ -224,14 +250,7 @@ a <- result[, 1:27]
 x <- fread("../../genomic/mypcair.PCs.csv", colClasses = c(PIDN = "character"))
 a <- merge(a, x, by = "PIDN")
 
-# eigen_import <- function(dat_prefix, score, tail) {
-  
-# }
-
 # Map in Scores assumes your primary data table exists 
-tail <- "normalized_scores.csv"
-score_val <- "NES"
-scor <- NULL
 if (length(score) > 1) {
   lapply(score, function(i){
     x <- fread(
@@ -308,7 +327,7 @@ annots <- data.frame(
 # keep just the complete.cases (drop cols)
 mat <- as.matrix(dcast(b, Score ~ PIDN, value.var = score_val), rownames = 'Score')
 mat <- mat[, colSums(is.na(mat)) == 0]
-mat <- t(scale(t(mat)))  # Transpose twice to scale rows instead of columns
+if (score_val == 'NES') mat <- t(scale(t(mat)))  # Transpose twice to scale rows instead of columns
 mat <- mat[, match(rownames(annots), colnames(mat))]
 
 
@@ -334,18 +353,26 @@ if (kmeans == 0) {
 
 
 # heatmap w/ dendrogram ----------------------------------------
-set.seed(3)
+# handle labels
+if (score_val == "NES") {
+  labs <- str_extract(rownames(mat), "^[^.]+")
+} else {
+  labs <- scor[match(rownames(mat), names(scor))] 
+}
+
 # Convert your pheatmap code to ComplexHeatmap
+set.seed(3)
 hm <- Heatmap(
   mat,
   name = "Score clustering across cohort",
   cluster_columns = TRUE,
   column_dend_height = unit(4, "cm"), 
   column_km = kval,
-  cluster_rows = FALSE,
+  cluster_rows = TRUE,
+  show_row_dend = FALSE,
   show_column_names = FALSE,
   row_split = breaks,
-  row_labels = str_extract(rownames(mat), "^[^.]+"),
+  row_labels = labs,
   top_annotation = HeatmapAnnotation(
     df = annots,
     col = list(
@@ -354,7 +381,7 @@ hm <- Heatmap(
   ),
   # Set legend columns parameter
   heatmap_legend_param = list(
-    title = paste("Scaled", score_val), 
+    title = ifelse(score_val == "NES", paste("Scaled", score_val), score_val), 
     legend_width = unit(4, "cm"),
     nrow = 2  # Number of rows in the legend (creates columns)
   )
@@ -369,7 +396,7 @@ ggsave(
   ), 
   plot = grid.grabExpr(draw(hm)), 
   width = 18, 
-  height = 4 + 2 * length(score), 
+  height = 4 + 0.25 * nrow(mat), 
   device = cairo_pdf
 )
 set.seed(3)
@@ -379,21 +406,63 @@ ggsave(
   ), 
   plot = grid.grabExpr(draw(hm)), 
   width = 18, 
-  height = 4 + 2 * length(score), 
+  height = 4 + 0.25 * nrow(mat), 
   dpi = 144, 
   type = cairo
 )
 
-
 # Save the clustering groups
+ks <- data.table(stack(column_order(drawn)))
+ks$PIDN <- colnames(mat)[ks$value]
 fwrite(
-  x = data.table(stack(column_order(drawn))),
+  x = ks,
   file = file.path(output, 
     paste(nameset, ifelse(length(score) > 1, "all", score), "heat_k.csv", sep=".")
   )
 )
 
 
-# z-summary score for representation across datasets? ----------
+# Final version if given  ----------
+if (final != ""){
+  col_dend <- column_dend(drawn)
+  col_dend <- rotate(col_dend, ord)
+  
+  # Convert your pheatmap code to ComplexHeatmap
+  set.seed(3)
+  hm <- Heatmap(
+    mat,
+    name = "Score clustering across cohort",
+    cluster_columns = col_dend,
+    column_dend_height = unit(4, "cm"), 
+    cluster_rows = TRUE,
+    show_row_dend = FALSE,
+    show_column_names = FALSE,
+    row_split = breaks,
+    row_labels = labs,
+    top_annotation = HeatmapAnnotation(
+      df = annots,
+      col = list(
+        Diagnosis_group = setNames(get_palette("BuPu", 4)[-1], levels(b$Diagnosis_group))
+      )
+    ),
+    # Set legend columns parameter
+    heatmap_legend_param = list(
+      title = ifelse(score_val == "NES", paste("Scaled", score_val), score_val), 
+      legend_width = unit(4, "cm"),
+      nrow = 2  # Number of rows in the legend (creates columns)
+    )
+  )
 
+  set.seed(3)
+  ggsave(
+    filename = file.path(output, 
+      paste(nameset, ifelse(length(score) > 1, "all", score), "heat_clust.FINAL.pdf", sep=".")
+    ), 
+    plot = grid.grabExpr(draw(hm)), 
+    width = 18, 
+    height = 4 + 0.25 * nrow(mat), 
+    device = cairo_pdf
+  )
+
+}
 

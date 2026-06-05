@@ -1,0 +1,1794 @@
+---
+title: "Rob Butler - plasma proteomics"
+author: "Greg Cary"
+date: "`r Sys.Date()`"
+output: 
+  html_document: 
+    fig_width: 5
+    fig_height: 4
+  html_notebook:
+    code_folding: hide
+    theme: spacelab
+    toc: true
+    toc_float: true
+---
+
+# setup
+
+## packages & workspace
+
+packages
+
+```{r workspace, message=FALSE}
+# # setup for linux/WSL2, needs conda python synapse client
+# syn.client <- reticulate::import('synapseclient')
+# syn.utils <- reticulate::import('synapseutils')
+# syn <- syn.client$Synapse()
+# syn$login()
+
+
+
+# setup for Windows, WSL2 with `conda activate synapse`
+library(synapser)
+synLogin()
+
+library(org.Hs.eg.db)
+library(clusterProfiler)
+library(furrr)
+library(tidyverse)
+library(DT)
+library(Hmisc)
+library(knitr)
+library(data.table)
+
+# suppress messages
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+
+# set ggplot theme
+theme_set(theme_bw())
+
+# WSL2
+proj.dir <- file.path(
+  "../"
+  # "/mnt", "box", "Robert\ Butler\'s\ Externally\ Shareable\ Files", "treat-ad_comparative"
+)
+# # Windows
+# proj.dir <- file.path(
+#   "C:", "Users", "rrbutler", "Box", "Robert Butler's Externally Shareable Files", "treat-ad_comparative"
+# )
+setwd(file.path(proj.dir, "manuscript"))
+
+```
+
+Define the function to compare GSEA results
+
+```{r gsea_comp_function }
+gsea_comp <- function( enr_tbl, GO_col,
+                       study1_nes, study1_sig,
+                       study2_nes, study2_sig, sig_thresh = 0.05){
+
+  terms <- enr_tbl %>%
+    select(GO = all_of(GO_col),
+           NES1 = all_of(study1_nes),
+           PADJ1 = all_of(study1_sig),
+           NES2 = all_of(study2_nes),
+           PADJ2 = all_of(study2_sig)) %>%
+    distinct()
+
+  x <- tibble(
+    a = terms %>%
+      filter( NES1 > 0, PADJ1 <= sig_thresh, NES2 > 0, PADJ2 <= sig_thresh) %>%
+      pull(GO) %>% unique() %>% length(),
+    b = terms %>%
+      filter( PADJ1 > sig_thresh, NES2 > 0, PADJ2 <= sig_thresh) %>%
+      pull(GO) %>% unique() %>% length(),
+    c = terms %>%
+      filter( NES1 < 0, PADJ1 <= sig_thresh, NES2 > 0, PADJ2 <= sig_thresh) %>%
+      pull(GO) %>% unique() %>% length(),
+    d = terms %>%
+      filter( NES1 > 0, PADJ1 <= sig_thresh, PADJ2 > sig_thresh) %>%
+      pull(GO) %>% unique() %>% length(),
+    e = terms %>%
+      filter( PADJ1 > sig_thresh, PADJ2 > sig_thresh) %>%
+      pull(GO) %>% unique() %>% length(),
+    f = terms %>%
+      filter( NES1 < 0, PADJ1 <= sig_thresh, PADJ2 > sig_thresh) %>%
+      pull(GO) %>% unique() %>% length(),
+    g = terms %>%
+      filter( NES1 > 0, PADJ1 <= sig_thresh, NES2 < 0, PADJ2 <= sig_thresh) %>%
+      pull(GO) %>% unique() %>% length(),
+    h = terms %>%
+      filter( PADJ1 > sig_thresh, NES2 < 0, PADJ2 <= sig_thresh) %>%
+      pull(GO) %>% unique() %>% length(),
+    i = terms %>%
+      filter( NES1 < 0, PADJ1 <= sig_thresh, NES2 < 0, PADJ2 <= sig_thresh) %>%
+      pull(GO) %>% unique() %>% length()
+  )
+
+  ppv = x$a/sum(x$a,x$b,x$c)
+    if(is.na(ppv)){ppv = 0}
+  npv = x$i/sum(x$g,x$h,x$i)
+    if(is.na(npv)){npv = 0}
+  ppv_c = sum(x$a, x$d, x$g)/sum(x)
+    if(is.na(ppv_c)){ppv_c = 0}
+  npv_c = sum(x$c, x$f, x$i)/sum(x)
+    if(is.na(npv_c)){npv_c = 0}
+  gain = ((ppv - ppv_c)+(npv - npv_c))/2
+
+  mtx = rbind(c(x$a, x$b,x$c), c(x$d, x$e,x$f), c(x$g,x$h,x$i))
+
+  tau = try(cor.test(terms$NES1, terms$NES2, meethod = 'kendall'), silent = T)
+  if(class(tau) == 'try-error'){ tau = tibble(NA)
+  } else { tau = broom::tidy(tau) }
+
+  res = tibble(
+    terms = list(terms), olap = list(mtx),
+    ppv, ppv_c, npv, npv_c, gain,
+    tau
+  )
+
+  return(res)
+
+}
+
+```
+
+
+## AD consortium data
+
+Grab relevant TREAT-AD data from synapse, including:
+
+1)  Target Risk Scores ([syn25575156](https://www.synapse.org/#!Synapse:syn25575156){target="_blank"}), Genetics Scores ([syn26844312](https://www.synapse.org/#!Synapse:syn26844312){target="_blank"}), and Omics Scores ([syn22758536](https://www.synapse.org/#!Synapse:syn22758536){target="_blank"})
+
+2)  Biodomain Definitions ([syn25428992](https://www.synapse.org/#!Synapse:syn25428992){target="_blank"})
+
+3)  TREAT-AD score GSEA results (based on Overall, Genetics, and Omics scores) ([syn52749187](https://www.synapse.org/#!Synapse:syn52749187){target="_blank"}), and omics GSEA results (based on proteomic and transcriptomic meta-analysis logFC) ([syn52749189](https://www.synapse.org/#!Synapse:syn52749189){target="_blank"})
+
+```{r TAD_data, message=FALSE}
+# login to synapse
+# synapser::synLogin()
+# syn$login()
+
+# target risk scores
+scores <- syn$tableQuery(
+  'select * from syn25575156',
+  includeRowIdAndRowVersion = F) %>%
+  .$filepath %>% read_csv(., col_types = cols())
+
+# Genetics scores
+gen <- syn$tableQuery(
+  'select * from syn26844312',
+  includeRowIdAndRowVersion = F) %>%
+  .$filepath %>% read_csv(., col_types = cols())
+
+# Multiomic scores
+omics <- syn$tableQuery(
+  'select * from syn22758536'
+  , includeRowIdAndRowVersion = F
+  ) %>%
+  .$filepath %>% read_csv(., col_types = cols())
+
+# Biological domain annotations
+biodom <- full_join(
+    # biodomains
+    readRDS( syn$get('syn25428992') %>% .$path ),
+    # domain labels
+    read_csv( syn$get('syn26856828') %>% .$path, col_types = cols()),
+    by = c('Biodomain'='domain') ) %>%
+  mutate(
+    Biodomain = if_else(Biodomain == 'none', NA_character_, Biodomain),
+    Subdomain = if_else(is.na(Subdomain), 'none', Subdomain),
+    sd = str_c(abbr,'_',Subdomain)
+    )
+
+domains = biodom %>% pull(Biodomain) %>% unique() %>% sort()
+
+# Enriched biodomain terms
+score.enr <- syn$get('syn52749187') %>% .$path %>% readRDS() 
+omics.enr <- syn$get('syn52749189') %>% .$path %>% readRDS() 
+```
+
+Gather groups of GO terms based on Biodomain and Subdomain annotations
+
+```{r}
+# curate biodomain and sub-domain gene lists
+bd.terms <- tibble( set = unique(biodom$Biodomain) ) %>%
+  mutate( terms = map(set, ~ biodom %>% filter(Biodomain == .x) %>% pull(GO_ID)) )
+
+sd.terms <- biodom %>%
+  mutate( Subdomain = if_else(is.na(Subdomain), 'none', Subdomain) ) %>%
+  select(Biodomain, abbr, Subdomain, subdomain_idx) %>% distinct() %>%
+  rowwise() %>%
+  mutate(
+    set = paste0(abbr,'_',Subdomain),
+    bd = Biodomain, sdi = subdomain_idx,
+    terms = biodom %>% filter(Biodomain == bd, subdomain_idx == sdi) %>% pull(GO_ID) %>% list()
+    )
+
+# combine
+bd.term.list = bind_rows(bd.terms, sd.terms %>% select(set, terms)) %>%
+  filter(set != 'NA_none')
+
+rm(bd.terms, sd.terms)
+```
+
+Gather groups of genes based on Biodomain & Subdomain annotations
+
+```{r}
+# curate biodomain and sub-domain gene lists
+bd.genes <- tibble( set = unique(biodom$Biodomain) ) %>%
+  mutate( 
+    genes = map(
+      set, ~ biodom %>% 
+      filter(Biodomain == .x) %>% 
+      pull(symbol) %>% 
+      unlist
+    ) 
+  )
+
+sd.genes <- biodom %>%
+  mutate( Subdomain = if_else(is.na(Subdomain), 'none', Subdomain) ) %>%
+  select(Biodomain, abbr, Subdomain, subdomain_idx) %>% 
+  distinct() %>%
+  rowwise() %>%
+  mutate(
+    set = paste0(abbr,'_',Subdomain),
+    bd = Biodomain, sdi = subdomain_idx,
+    genes = biodom %>% 
+    filter(Biodomain == bd, subdomain_idx == sdi) %>% 
+    pull(symbol) %>% 
+    unlist %>% 
+    list()
+  )
+
+# combine
+bd.gene.lists = bind_rows(bd.genes, sd.genes %>% select(set, genes)) %>%
+  filter(set != 'NA_none')
+
+rm(bd.genes, sd.genes)
+
+# join with expression data
+bd.genes <- omics %>% 
+  select(Symbol = GName, ENSG, RNA_TE, Pro_TE) %>% 
+  filter(!is.na(Symbol)) %>% distinct() %>% 
+  left_join(bd.gene.lists %>% unnest(genes) %>% rename(Symbol = genes),.) %>% 
+  filter(!is.na(Pro_TE))
+```
+
+
+Get [Johnson *et al*](https://pmc.ncbi.nlm.nih.gov/articles/instance/8825285/) module data:
+
+```{r johnson_proteomics_modules}
+# supp table:
+# download.file(
+  # 'https://pmc.ncbi.nlm.nih.gov/articles/instance/8825285/bin/41593_2021_999_MOESM3_ESM.xlsx',
+  # destfile = 'johnson_modules.xlsx')
+
+johnson <- readxl::read_xlsx(here::here('data','johnson_modules.xlsx'), sheet = 3, skip = 4)
+
+tmt.mods <- johnson %>% 
+  select(Symbol, uniprot = `Uniprot Accession`, 
+         ad.ctrl = `AD-Control`, 
+         asym.ctrl = `AsymAD-Control`, 
+         ad.asym = `AD-AsymAD`, 
+         module = `WGCNA\r\nModule|color|kME\r\nSort Vector`) %>% 
+  mutate(module = str_split(module, '\\|')) %>% 
+  unnest_wider(module, names_sep = '.') %>% 
+  mutate(mod = str_replace(module.1, ' ', '_'))
+
+# filter duplicate protein probes
+tmt.mods <- unique(
+  x = data.table(tmt.mods)[order(mod, -abs(ad.ctrl))], 
+  by = c("Symbol", "mod")
+)
+
+disease.modules <- unique(tmt.mods$mod) %>% 
+    str_subset(pattern = 'M42_|M11_|M24_|M7_|M25_|M3_|M5_|M8_|M1_|M20_|M2_|M29_')
+```
+
+
+# Plasma biomarker data
+data from the biomarker SomaLogic associations
+```{r}
+
+data.dir <- list.dirs(here::here(proj.dir, 'baseline_PCs_relatedness'), recursive = F) %>% 
+  str_subset(.,'.APOE') %>% str_subset(., 'relatedness\\/\\.', negate=T)
+
+files <- map_chr(data.dir, ~list.files(.x, full.names = T) %>% 
+               str_subset(.,'.csv') %>% str_subset(.,'gprofiler', negate = T))
+
+data <- tibble( f = files ) %>% 
+  mutate(file = basename(f),
+         biomarker = str_extract(file, 'Plasma[_A-Za-z0-9]+(?!=.APOE.csv)') %>% 
+           str_remove_all(., '_|Plasma') %>%
+           str_replace_all(., 'AB140P', 'A\u03b240') %>%
+           str_replace_all(., 'AB142P', 'A\u03b242') %>%
+           str_replace_all(., 'PTau', 'pTau') %>%
+           str_replace_all(., 'ABRatio', 'A\u03b242/A\u03b240') %>%
+           str_replace_all(., 'AB42Ratio', '/A\u03b242'),
+         d = map(f, ~read_csv(.x, col_types = cols()))
+         ) %>% 
+  select(-f) %>% 
+  unnest(d) %>% 
+  rename_all(.funs = ~ str_replace_all(.x,' ','_'))
+
+
+```
+
+## explore
+
+```{r fig.width=8, fig.height=4}
+ggplot(arrange(data,desc(padj)), aes(beta, -log10(padj)))+
+  facet_wrap(~str_c(biomarker, ' (N=',nobs,')'), nrow = 2
+             # , scales = 'free'
+             )+
+  geom_vline(xintercept = 0, lwd = .1)+
+  geom_point(alpha = .3, aes(color = padj <= 0.05))+
+  scale_color_manual(values = c('grey','red'))+
+  theme(legend.position = 'top')
+```
+
+```{r fig.width=8, fig.height=4}
+ggplot(arrange(data,desc(padj)), aes(t_stat, -log10(padj)))+
+  facet_wrap(~str_c(biomarker, ' (N=',nobs,')'), scales = 'free', nrow =2)+
+  geom_vline(xintercept = 0, lwd = .1)+
+  geom_point(alpha = .3, aes(color = padj <= 0.05))+
+  scale_color_manual(values = c('grey','red'))+
+  theme(legend.position = 'top')
+
+```
+
+# CSF correlations{.tabset}
+```{r}
+
+csf.mods <- read_tsv(str_c(proj.dir, 'biodomains','TMTSoma-CSF.113.one2one.Human.Genes.txt', sep = '/')) %>%
+  left_join(., read_tsv(str_c(proj.dir, 'biodomains','TMTSoma-CSF.113.one2one.Human.Corr.txt', sep = '/')))
+```
+
+```{r}
+model_vs_ampad <- data %>% 
+  inner_join(csf.mods %>% 
+               filter(!is.na(log2FC)) %>% 
+               select(Symbol = symbol, mod = module, ad.ctrl = log2FC),., 
+             by = 'Symbol', multiple = 'all') %>% 
+  filter(!is.na(mod)) %>%
+  select(mod, biomarker, Symbol, ad.ctrl, beta, t_stat, padj) %>% 
+  group_by(mod, biomarker) %>% 
+  nest(data = c(Symbol, ad.ctrl, beta, t_stat, padj)) %>% 
+  mutate(n = map_dbl(data, ~nrow(.x)),
+         group = case_when(
+           biomarker %in% c('Aβ40','Aβ42') ~ 'A\u03b2',
+           biomarker %in% c('pTau181','pTau217') ~ 'Tau',
+           biomarker %in% c('GFAP','NfL') ~ 'NDegen',
+           T ~ 'Ratio'),
+         group = factor(group, levels = c('A\u03b2', 'Tau','Ratio','NDegen'))) %>% 
+  filter(n > 2)
+
+cor.df <- model_vs_ampad %>% 
+  mutate(
+    cor_test = map(data, ~ cor.test(.x[["t_stat"]], .x[["ad.ctrl"]], method = "pearson")),
+    correlation = map_dbl(cor_test, "estimate"),
+    p_value = map_dbl(cor_test, "p.value")
+    ) %>%
+  ungroup() %>%
+  dplyr::select(-cor_test) %>% 
+  mutate(
+    significant = p_value < 0.05,
+    mod_n = str_split_fixed(mod, ' ',2) %>% .[,1] %>% str_remove_all(., 'M') %>% as.numeric(),
+    mod_n = if_else(is.na(mod_n), 100, mod_n),
+    mod = fct_reorder(mod, mod_n))
+
+```
+
+
+```{r}
+cor.df %>% arrange(desc(abs(correlation)), p_value) %>% 
+  saveRDS('csf_module_biomarker_correlation.RDS')
+```
+
+## All modules
+
+```{r fig.width = 15, fig.height=6}
+p = ggplot(cor.df, aes(mod, biomarker))+
+  geom_tile(color = 'black', fill = 'white')+
+  geom_point(aes(color = correlation, size = abs(correlation)))+
+  geom_point(data = subset(cor.df, significant), stroke = 1.2,shape = 0, size = 6)+
+  scale_x_discrete(position = 'top')+
+  scale_y_discrete(limits = rev, position = 'right')+
+  scale_size()+#guide = 'none'
+  scale_color_gradient2(name = "Correlation", low = "#85070C", high = "#164B6E", 
+                         guide = guide_colorbar(ticks = FALSE) )+
+  labs(x = NULL, y = NULL)+
+  facet_grid(rows = vars(group), scales = 'free', space = 'free', switch = 'y')+
+  theme(
+    strip.text.x = element_text(angle = 90, size = 10,colour = c("black")),
+    strip.text.y.left = element_text(angle = 0,size = 12),
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 0, vjust = 0, size = 12),
+    axis.text.y = element_text(angle = 0, size = 12),
+    panel.background = element_blank(),
+    plot.title = element_text(angle = 0, vjust = -54, hjust = 0.03,size=12,face="bold"),
+    plot.title.position = "plot",
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    plot.margin = margin(2,2,2,20)
+  )
+
+print(p)
+```
+```{r, include=FALSE}
+#' Plot the correlation of markers to ref
+#'
+#' @param m string for the module to plot
+#' @param m_col string column name with modules/biodomains
+#' @param x string stat column to compare to t_stat
+#' @param x_lab string for the x-axis label [default: %x]
+#'
+#' @return ggplot object
+corr_dotplot <- function(m, m_col = 'mod', x = 'ad.ctrl', x_lab = NULL) {
+  if (is.null(x_lab)) x_lab <- as.character(x)
+  tmp <- data.table(unnest(cor.df, data))[get(m_col) %like% m][order(t_stat, get(x))]
+  
+  p <- ggplot(unique(tmp, by = c("biomarker", "Symbol")), aes(get(x), t_stat))+
+    geom_point(alpha = .5)+
+    geom_smooth(method = 'lm', alpha = .3, lwd = .2)+
+    geom_vline(xintercept = 0, lwd = .1)+
+    geom_hline(yintercept = 0, lwd = .1)+
+    ggrepel::geom_label_repel(
+      # data = subset(tmp, !duplicated(symbol)),
+      aes(label = Symbol), size = 2, alpha = .7, 
+      segment.curvature = -0.1, segment.ncp = 3, segment.angle = 20,
+      min.segment.length = 0, max.overlaps = 15)+
+    facet_wrap(~biomarker, nrow = 2)+
+    geom_label(size = 2.5,
+             x = Inf, y = -Inf, hjust = 1, vjust = 0,
+             aes( label = str_c( 'r = ', signif(correlation, digits = 3),
+                                 '\np = ', signif(p_value, digits = 3),
+                                 '\nn = ', n )
+             )) +
+    labs(x = x_lab, 
+         y = 'plasma biomarker t_stat', 
+         subtitle = str_c(#g,'\n',
+                          cor.df[[m_col]][grep(m,cor.df[[m_col]])]))
+  return(p)
+}
+
+```
+
+
+```{r csf_mods, warning=FALSE, results='asis'}
+# Module dotplots that are significant
+terms <- c(
+  'M1 ', 'M2 ', 'M3 ', 'M4 ', 'M5 ', 'M7 ', 'M11 ', 'M13 ', 'M15 ', 'M17 ', 
+  'M18 ', 'M20 ', 'M21 ', 'M22 ', 'M25 ', 'M26 ', 'M27 ', 'M32 ', 'M33 ', 'M34 '
+)
+invisible(lapply(seq(terms), function(i) {
+  
+  # header name
+  cat("  \n##",  gsub("_", "", terms[i]), "  \n")
+
+  # dotplot for each
+  print(
+    corr_dotplot(
+      m = terms[i],
+      x_lab = 'CSF logFC'
+    )
+  )
+
+  plot.new()
+  dev.off()
+  cat("  \n  \n")  
+
+}))
+
+```
+
+
+
+
+# Johnson module correlations{.tabset}
+
+Here we're going to compare protein changes to postmortem human brain case vs control. We'll focus on subsets of proteins defined by protein co-expression modules identified in postmortem human brain ([Johnson *et al*](https://pmc.ncbi.nlm.nih.gov/articles/instance/8825285/) modules). 
+
+```{r}
+model_vs_ampad <- data %>% 
+  inner_join(tmt.mods %>% select(Symbol, mod, ad.ctrl),., 
+             by = 'Symbol', multiple = 'all') %>% 
+  filter(!is.na(mod)) %>%
+  select(mod, biomarker, Symbol, ad.ctrl, beta, t_stat, padj) %>% 
+  group_by(mod, biomarker) %>% 
+  nest(data = c(Symbol, ad.ctrl, beta, t_stat, padj)) %>% 
+  mutate(n = map_dbl(data, ~nrow(.x)),
+         group = case_when(
+           biomarker %in% c('Aβ40','Aβ42') ~ 'A\u03b2',
+           biomarker %in% c('pTau181','pTau217') ~ 'Tau',
+           biomarker %in% c('GFAP','NfL') ~ 'NDegen',
+           T ~ 'Ratio'
+         ),
+         group = factor(group, levels = c('A\u03b2', 'Tau','Ratio','NDegen'))) %>% 
+  filter(n > 3)
+
+cor.df <- model_vs_ampad %>% 
+  mutate(
+    cor_test = map(data, ~ cor.test(.x[["t_stat"]], .x[["ad.ctrl"]], method = "pearson")),
+    correlation = map_dbl(cor_test, "estimate"),
+    p_value = map_dbl(cor_test, "p.value")
+    ) %>%
+  ungroup() %>%
+  dplyr::select(-cor_test) %>% 
+  mutate(
+    significant = p_value < 0.05,
+    mod_n = str_split_fixed(mod, '_',2) %>% .[,1] %>% str_remove_all(., 'M') %>% as.numeric(),
+    mod_n = if_else(is.na(mod_n), 100, mod_n),
+    mod = fct_reorder(mod, mod_n))
+
+dz.cor.df <- cor.df %>% filter(mod %in% disease.modules) 
+```
+
+```{r}
+cor.df %>% arrange(desc(abs(correlation)), p_value) %>% 
+  saveRDS('tmt_module_biomarker_correlation.RDS')
+```
+
+## All modules
+
+```{r fig.width = 18, fig.height=5}
+p = ggplot(cor.df, aes(mod, biomarker))+
+  geom_tile(color = 'black', fill = 'white')+
+  geom_point(aes(color = correlation, size = abs(correlation)))+
+  geom_point(data = subset(cor.df, significant), stroke = 1.2,shape = 0, size = 6)+
+  scale_x_discrete(position = 'top')+
+  scale_y_discrete(limits = rev, position = 'right')+
+  scale_size()+#guide = 'none'
+  scale_color_gradient2(name = "Correlation", low = "#85070C", high = "#164B6E", 
+                         guide = guide_colorbar(ticks = FALSE) )+
+  labs(x = NULL, y = NULL)+
+  facet_grid(rows = vars(group), scales = 'free', space = 'free', switch = 'y')+
+  theme(
+    strip.text.x = element_text(angle = 90, size = 10,colour = c("black")),
+    strip.text.y.left = element_text(angle = 0,size = 12),
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 0, vjust = 0, size = 12),
+    axis.text.y = element_text(angle = 0, size = 12),
+    panel.background = element_blank(),
+    plot.title = element_text(angle = 0, vjust = -54, hjust = 0.03,size=12,face="bold"),
+    plot.title.position = "plot",
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    plot.margin = margin(2,2,2,20)
+  )
+
+print(p)
+```
+
+```{r}
+cor.df %>% arrange(desc(abs(correlation)), p_value) %>% 
+  saveRDS('tmt_module_biomarker_correlation.RDS')
+```
+
+## Disease associated modules
+
+```{r fig.width = 7, fig.height=5, warning=FALSE}
+p = ggplot(dz.cor.df, aes(mod, biomarker))+
+  geom_tile(color = 'black', fill = 'white')+
+  geom_point(aes(color = correlation, size = abs(correlation)))+
+  geom_point(data = subset(dz.cor.df, significant), stroke = 1.2,shape = 0, size = 6)+
+  scale_x_discrete(position = 'top')+
+  scale_y_discrete(limits = rev, position = 'right')+
+  scale_size()+#guide = 'none'
+  scale_color_gradient2(name = "Correlation", low = "#85070C", high = "#164B6E", 
+                         guide = guide_colorbar(ticks = FALSE) )+
+  labs(x = NULL, y = NULL)+
+  facet_grid(rows = vars(group), scales = 'free', space = 'free', switch = 'y')+
+  theme(
+    strip.text.x = element_text(angle = 90, size = 10,colour = c("black")),
+    strip.text.y.left = element_text(angle = 0,size = 12),
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 0, vjust = 0, size = 12),
+    axis.text.y = element_text(angle = 0, size = 12),
+    panel.background = element_blank(),
+    plot.title = element_text(angle = 0, vjust = -54, hjust = 0.03,size=12,face="bold"),
+    plot.title.position = "plot",
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    plot.margin = margin(2,2,2,20)
+  )
+
+print(p)
+
+```
+
+```{r tmt_mods, warning=FALSE, results='asis'}
+# Module dotplots that are significant
+terms <- c(
+  'M7_', 'M9_', 'M17_', 'M20_', 'M22_', 'M23_', 'M25_', 'M26_', 'M27_', 'M28_', 
+  'M29_', 'M30_', 'M32_', 'M33_', 'M35_', 'M36_', 'M37_', 'M42_'
+)
+invisible(lapply(seq(terms), function(i) {
+  
+  # header name
+  cat("  \n##",  gsub("_", "", terms[i]), "  \n")
+
+  # dotplot for each
+  print(
+    corr_dotplot(
+      m = terms[i],
+      x_lab = 'AMP-AD logFC'
+    )
+  )
+
+  plot.new()
+  dev.off()
+  cat("  \n  \n")  
+
+}))
+
+```
+
+
+
+
+# Biodomain protein correlation {.tabset}
+
+Here we're going to correlate protein expression changes in biomarker with postmortem human brain samples, partitioned by biological domain (biodomain) and sub-domain rather than protein co-expression modules.
+
+```{r}
+sig = 1.5
+
+model_vs_ampad <- data %>% 
+  select(biomarker, Symbol, beta, t_stat, padj) %>% distinct() %>% 
+  inner_join(bd.genes,., multiple = 'all') %>% 
+  filter(!is.na(set), padj <= sig) %>% 
+  group_by(set, biomarker) %>% 
+  nest(data = c(Symbol, ENSG, beta, t_stat, padj, RNA_TE, Pro_TE)) %>% 
+  mutate(
+    data = map(data, ~distinct(.x)),
+    group = case_when(
+       biomarker %in% c('Aβ40','Aβ42') ~ 'A\u03b2',
+       biomarker %in% c('pTau181','pTau217') ~ 'Tau',
+       biomarker %in% c('GFAP','NfL') ~ 'NDegen',
+       T ~ 'Ratio'),
+    group = factor(group, levels = c('A\u03b2', 'Tau','Ratio','NDegen')),
+    n = map_dbl(data, ~nrow(.x))) %>% 
+  filter(n > 3)
+
+cor.df <- model_vs_ampad %>% 
+  mutate(
+    cor_test = map(data, ~ cor.test(.x[["t_stat"]], 
+                                    .x[["Pro_TE"]], 
+                                    method = "pearson")),
+    correlation = map_dbl(cor_test, "estimate"),
+    p_value = map_dbl(cor_test, "p.value")
+    ) %>%
+  ungroup() %>%
+  dplyr::select(-cor_test) %>% 
+  mutate(significant = p_value < 0.05) 
+
+```
+
+```{r}
+cor.df %>% arrange(desc(abs(correlation)), p_value) %>% 
+  saveRDS('biodomain_biomarker_correlation.RDS')
+```
+
+
+## biodomain
+```{r fig.width = 8, fig.height=5}
+ggplot(data = subset(cor.df, grepl('_',set)==F), aes(set, biomarker))+
+  geom_tile(color = 'black', fill = 'white')+
+  geom_point(aes(color = correlation, size = abs(correlation)))+
+  geom_point(data = subset(cor.df, significant & grepl('_',set)==F), 
+             stroke = 1.2,shape = 0, size = 6)+
+  facet_grid(rows = vars(group), scales = 'free', space = 'free', switch = 'y')+
+  scale_x_discrete(position = 'top')+
+  scale_y_discrete(limits = rev, position = 'right')+
+  scale_size()+#guide = 'none'
+  scale_color_gradient2(name = "Correlation", low = "#85070C", high = "#164B6E", 
+                         guide = guide_colorbar(ticks = FALSE) )+
+  labs(x = NULL, y = NULL)+
+  theme(
+    # strip.text.x = element_text(angle = 90, size = 10,colour = c("black")),
+    strip.text.y.left = element_text(angle = 0,size = 12),
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 0, vjust = 0, size = 12),
+    axis.text.y = element_text(angle = 0, size = 12),
+    panel.background = element_blank(),
+    plot.title = element_text(angle = 0, vjust = -54, hjust = 0.03,size=12,face="bold"),
+    plot.title.position = "plot",
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    plot.margin = margin(2,2,2,20)
+  )
+```
+
+
+## significant subdomains
+```{r fig.width = 12, fig.height=7}
+terms <- cor.df %>% 
+  filter(grepl('_', set)) %>%
+  filter(!grepl('none', set)) %>%
+  filter(p_value < 0.05) %>%
+  select(set) %>%
+  distinct() %>%
+  as_vector()
+tmp <- cor.df %>% 
+  filter(set %in% terms) %>%
+  mutate( max_n = max(n), .by = set ) %>% 
+  mutate(
+    bd = str_extract(set, '^[A-Za-z]{2}_') %>% str_remove(., '_'),
+    set1 = str_remove_all(set, '^[A-Za-z]{2}_') %>% str_trunc(., 40) %>% str_c( '[',max_n,'] -- ',.),
+    set1 = fct_reorder(set1, max_n)
+    ) 
+    
+p <- ggplot(data = tmp, aes( set1, biomarker))+
+  geom_tile(color = 'black', fill = 'white')+
+  geom_point(aes(color = correlation, size = abs(correlation)))+
+  geom_point(data = subset(tmp, significant), stroke = 1.2,shape = 0, size = 6)+
+  facet_grid(rows = vars(group), cols = vars(bd), scales = 'free', space = 'free', switch = 'y')+
+  scale_x_discrete(position = 'top')+
+  scale_y_discrete(limits = rev, position = 'right')+
+  scale_size()+#guide = 'none'
+  scale_color_gradient2(name = "Correlation", low = "#85070C", high = "#164B6E", 
+                         guide = guide_colorbar(ticks = FALSE) )+
+  labs(x = NULL, y = NULL)+
+  theme(
+    # strip.text.x = element_text(angle = 90, size = 10,colour = c("black")),
+    strip.text.y.left = element_text(angle = 0,size = 12),
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 0, vjust = 0, size = 12),
+    axis.text.y = element_text(angle = 0, size = 12),
+    panel.background = element_blank(),
+    plot.title = element_text(angle = 0, vjust = -54, hjust = 0.03,size=12,face="bold"),
+    plot.title.position = "plot",
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    plot.margin = margin(2,2,2,20)
+  )
+
+print(p)
+```
+
+
+## select subdomains
+```{r fig.width = 12, fig.height=7}
+tmp <- cor.df %>% 
+  filter(grepl(
+    str_c('Ap_apoptotic mitochondrial', 
+          'Ap_extrinsic apoptotic',
+          'Ap_intrinsic apoptotic',
+          'Ap_inflammatory cell apoptotic',
+          'AM_amyloid precursor protein bio',
+          'AM_amyloid-beta clear',
+          'En_endocytic vesicle',
+          'En_exocytic vesicle',
+          'En_recycling endosome',
+          'IR_activation of innate',
+          'IR_leukocyte chemo',
+          'IR_cytokine prod',
+          'IR_adaptive immune',
+          'LM_fatty acid metabolic',
+          'LM_glycerolipid metab',
+          'LM_sphingolipid',
+          'LM_phosphatidylcholine',
+          'MB_metallopeptid',
+          'MM_electron transport',
+          'Pr_translation',
+          'Pr_endoplasmic ret',
+          'SS_extracellular matrix',
+          'SS_actin filament',
+          'SS_cell-substrate adhesion',
+          'Sy_axon regeneration',
+          'Sy_learning or memory',
+          'Sy_trans-synaptic signal',
+          'endothelial cell migration',
+          sep = '|')
+    , set)) %>% 
+  mutate( max_n = max(n), .by = set ) %>% 
+  mutate(
+    bd = str_extract(set, '^[A-Za-z]{2}_') %>% str_remove(., '_'),
+    set1 = str_remove_all(set, '^[A-Za-z]{2}_') %>% str_trunc(., 40) %>% str_c( '[',max_n,'] -- ',.),
+    set1 = fct_reorder(set1, max_n)
+    ) 
+    
+p <- ggplot(data = tmp, aes( set1, biomarker))+
+  geom_tile(color = 'black', fill = 'white')+
+  geom_point(aes(color = correlation, size = abs(correlation)))+
+  geom_point(data = subset(tmp, significant), stroke = 1.2,shape = 0, size = 6)+
+  facet_grid(rows = vars(group), cols = vars(bd), scales = 'free', space = 'free', switch = 'y')+
+  scale_x_discrete(position = 'top')+
+  scale_y_discrete(limits = rev, position = 'right')+
+  scale_size()+#guide = 'none'
+  scale_color_gradient2(name = "Correlation", low = "#85070C", high = "#164B6E", 
+                         guide = guide_colorbar(ticks = FALSE) )+
+  labs(x = NULL, y = NULL)+
+  theme(
+    # strip.text.x = element_text(angle = 90, size = 10,colour = c("black")),
+    strip.text.y.left = element_text(angle = 0,size = 12),
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 0, vjust = 0, size = 12),
+    axis.text.y = element_text(angle = 0, size = 12),
+    panel.background = element_blank(),
+    plot.title = element_text(angle = 0, vjust = -54, hjust = 0.03,size=12,face="bold"),
+    plot.title.position = "plot",
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    plot.margin = margin(2,2,2,20)
+  )
+
+print(p)
+```
+
+
+```{r, fig.width=8, fig.height=6, echo=FALSE, message=FALSE, results='asis'}
+s = biodom %>% select(Biodomain, abbr) %>% distinct() %>% filter(!is.na(Biodomain))
+
+for(i in 1:nrow(s)){
+  
+  tmp <- cor.df %>% filter(grepl(str_c(s$abbr[i],'_'), set)) %>% 
+    mutate( max_n = max(n), .by = set ) %>% 
+    mutate(set1 = str_remove_all(set, '^[A-Za-z]{2}_') %>% 
+             str_trunc(., 30) %>% str_c( '[',max_n,'] -- ',.),
+           set1 = fct_reorder(set1, max_n)
+    )
+    
+  cor.plot = ggplot(data = tmp, aes( set1, biomarker))+
+    geom_tile(color = 'black', fill = 'white')+
+    geom_point(aes(color = correlation, size = abs(correlation)))+
+    geom_point(data = subset(tmp, significant), stroke = 1.2,shape = 0, size = 6)+
+    facet_grid(rows = vars(group), scales = 'free', space = 'free', switch = 'y')+
+    scale_x_discrete(position = 'top')+
+    scale_y_discrete(limits = rev, position = 'right')+
+    scale_size()+#guide = 'none'
+    scale_color_gradient2(name = "Correlation", low = "#85070C", high = "#164B6E", 
+                           guide = guide_colorbar(ticks = FALSE) )+
+    labs(x = NULL, y = NULL)+
+    theme(
+      # strip.text.x = element_text(angle = 90, size = 10,colour = c("black")),
+      strip.text.y.left = element_text(angle = 0,size = 12),
+      axis.ticks = element_blank(),
+      axis.text.x = element_text(angle = 45, hjust = 0, vjust = 0, size = 12),
+      axis.text.y = element_text(angle = 0, size = 12),
+      panel.background = element_blank(),
+      plot.title = element_text(angle = 0, vjust = -54, hjust = 0.03,size=12,face="bold"),
+      plot.title.position = "plot",
+      panel.grid = element_blank(),
+      legend.position = "bottom",
+      plot.margin = margin(2,2,2,20)
+    )
+  
+  cat("  \n##",  s$Biodomain[i], "  \n")
+  print(cor.plot)
+  plot.new()
+  dev.off()
+  cat("  \n  \n")  
+}
+
+```
+
+
+```{r sig_subdomains, results='asis', warning=FALSE}
+# Subdomains dotplots that are significant
+invisible(lapply(seq(terms), function(i) {
+  
+  # header name
+  cat("  \n##",  gsub(" ", "_", terms[i]), "  \n")
+
+  # dotplot for each
+  print(
+    corr_dotplot(
+      m = terms[i],
+      m_col = 'set',
+      x = 'Pro_TE',
+      x_lab = 'AMP-AD logFC'
+    )
+  )
+
+  plot.new()
+  dev.off()
+  cat("  \n  \n")  
+
+}))
+
+
+```
+
+
+
+
+# GSEA
+
+```{r message=FALSE, warning=FALSE}
+gsea <- data %>% 
+  # mutate(signedP = -log10(padj)*sign(beta)) %>% 
+  group_by(biomarker) %>% 
+  arrange(desc(t_stat)) %>% 
+  summarise( gl = t_stat %>% setNames(., Symbol) %>% list() ) %>% 
+  ungroup() %>% 
+  mutate(
+    res = map(gl, ~ clusterProfiler::gseGO(
+      .x, OrgDb = org.Hs.eg.db::org.Hs.eg.db, 
+      keyType = 'SYMBOL', eps = 0, pvalueCutoff = 1))
+  )
+```
+
+## Biodomain Enrichment
+
+```{r fig.width=12, fig.height=6, warning=FALSE}
+sig = 0.05
+
+tmp <- gsea %>% 
+  mutate(r = map(res, ~.x@result)) %>% 
+  select(-gl, -res) %>% 
+  unnest(r) %>% 
+  left_join(., biodom %>% select(ID = GO_ID, Biodomain:Subdomain, abbr:sd)) %>% 
+  mutate(Biodomain = if_else(is.na(Biodomain), 'none', Biodomain),
+         color = if_else(is.na(color), 'grey30', color),
+         n_sig = length(ID[p.adjust <= sig]), 
+         med_nes = median(NES[p.adjust <= sig]),
+         .by = Biodomain) %>% 
+  mutate(med_nes = if_else(is.na(med_nes), 0, med_nes),
+         Biodomain = fct_reorder(Biodomain, n_sig))
+  
+ggplot(tmp, aes(NES, Biodomain))+
+  facet_wrap(~biomarker, ncol = 4)+
+  geom_vline(xintercept = 0, lwd = .1)+
+  geom_jitter(data = subset(tmp, p.adjust > sig), 
+             color = 'grey80', alpha = .3, size = .2)+
+  geom_jitter(data = subset(tmp, p.adjust <= sig), 
+             aes(color = color),
+             alpha = .3)+
+  geom_violin(data = subset(tmp, p.adjust <= sig & NES > 0),
+              aes(color = color, fill = color),
+              alpha = .1, scale = 'width', draw_quantiles = .5)+
+  geom_violin(data = subset(tmp, p.adjust <= sig & NES < 0),
+              aes(color = color, fill = color),
+              alpha = .1, scale = 'width', draw_quantiles = .5)+
+  scale_color_identity()+scale_fill_identity()+
+  labs(y = '',
+       subtitle = str_c('terms enriched @ adjusted p < ',sig))
+```
+
+## GSEA comparison{.tabset}
+
+```{r}
+sig = .1
+
+oe <- omics.enr %>% 
+  filter(score == 'Pro_TE') %>% 
+  select(score,anno) %>% 
+  unnest(anno)
+
+vs.omics <- gsea %>% 
+  mutate(r = map(res, ~.x@result)) %>% 
+  select(-gl, -res) %>% 
+  unnest(r) %>% 
+  select(biomarker, term = ID, dx.nes = NES, dx.padj = p.adjust) %>% 
+  distinct() %>%
+  nest( data = -c(biomarker) ) %>%
+  mutate(
+    data = map(
+      data,
+      ~ full_join(
+        oe %>% select(term = GO_ID, amp.nes = NES, amp.padj = p.adjust) %>% distinct(),
+        .x, by = 'term', na_matches = 'never') %>%
+        mutate(
+          across(contains('padj'), ~ if_else(is.na(.x), 1, .x)),
+          across(contains('nes'), ~ if_else(is.na(.x), 0, .x)),
+          dx.nes = if_else(dx.padj > sig, 0, dx.nes),
+          amp.nes = if_else(amp.padj > sig, 0, amp.nes)
+          )
+    )) 
+
+sink('/dev/null')
+all = map(vs.omics$biomarker,
+          ~ vs.omics %>% filter(biomarker == .x) %>% pull(data) %>% .[[1]] %>%
+            gsea_comp(., 'term', 'amp.nes', 'amp.padj', 'dx.nes', 'dx.padj', sig_thresh = sig) )
+
+no_bd = map(vs.omics$biomarker,
+            ~ vs.omics %>% filter(biomarker == .x) %>% pull(data) %>% .[[1]] %>%
+                filter((term %in% biodom$GO_ID)==F) %>%
+                gsea_comp(., 'term', 'amp.nes', 'amp.padj', 'dx.nes', 'dx.padj', 
+                          sig_thresh = sig) )
+
+comp <- crossing(model = vs.omics$biomarker, set = bd.term.list$set) %>%
+  mutate(
+    res = map2(
+      model, set,
+      ~ vs.omics %>% filter(biomarker == .x) %>% pull(data) %>% .[[1]] %>%
+          filter(term %in% bd.term.list$terms[[which(bd.term.list$set == .y)]]) %>%
+          gsea_comp(., 'term', 'amp.nes', 'amp.padj', 'dx.nes', 'dx.padj', sig_thresh = sig)
+      )) %>%
+  bind_rows(
+    .,
+    tibble(model = vs.omics$biomarker, set = 'All Terms', res = all),
+    tibble(model = vs.omics$biomarker, set = 'No Biodomain', res = no_bd)
+    ) %>%
+  unnest(res) %>%
+  mutate(
+    n.sig = map_dbl(terms, ~ .x %>% filter(PADJ1 <= sig | PADJ2 <= sig) %>% nrow()),
+    n.sig.1 = map_dbl(terms, ~ .x %>% filter(PADJ1 <= sig) %>% nrow()),
+    n.sig.2 = map_dbl(terms, ~ .x %>% filter(PADJ2 <= sig) %>% nrow()),
+    n.sig.both = map_dbl(terms, ~ .x %>% filter(PADJ1 <= sig, PADJ2 <= sig) %>% nrow()),
+    n.terms = map_dbl(olap,~sum(.x)),
+    norm.gain = (n.sig.1*(gain/100))/n.terms,
+
+    tau.padj = p.adjust(p.value, method = 'BH'),
+    tau.padj = if_else(tau.padj == 0, min(tau.padj[tau.padj>0], na.rm =T), tau.padj),
+    significant = tau.padj <= 0.05,
+    group = case_when(
+      model %in% c('AB140P','AB142P','ABRatio') ~ 'A\u03b2',
+      model %in% c('PTau181','pTau217') ~ 'Tau',
+      model %in% c('GFAP','NfL') ~ 'NDegen',
+      T ~ 'Ratio'),
+    group = factor(group, levels = c('A\u03b2', 'Tau','Ratio','NDegen'))
+    )
+sink()
+
+```
+
+### biodomain
+
+```{r fig.width=8, fig.height=6}
+tmp <- comp %>%
+  group_by(model) %>%
+  mutate(any_sig = any(n.sig.both > 0),
+         set = factor(set,
+                      levels = unique(comp$set) %>%
+                        str_subset(., 'All Terms|No Biodomain',negate = T) %>%
+                        c('All Terms','No Biodomain',.))) %>%
+  filter( !grepl('_', set), any_sig )
+
+ggplot(tmp, aes(set, model)) +
+  geom_tile(colour = "black", fill = "white") +
+  geom_point(aes(fill = estimate, size = (.data$n.sig.both /.data$n.terms)*100 )
+             ,color = 'grey50', shape = 21) +
+  geom_point(data = subset(tmp, tau.padj <= 5e-2)
+             ,color="black", shape=0, size= 5, stroke = .75) +
+  facet_grid(rows = vars(group), scales = 'free', space = 'free', switch = 'y')+
+  scale_size( 
+    "Jaccard index",
+    range = c(.5, 4)
+    # , limits = c(1e-9,1)
+    , limits = c(1e-9,NA)
+    # , breaks = c(0.01,1,10)
+    ) +
+  scale_fill_gradient2(
+    name = "Kendall's \u03C4 coefficient",
+    low = "#85070C", high = "#164B6E", mid = 'grey95'
+    , guide = guide_colorbar(ticks = T)
+    # , limits = c(-1.1,1.1)
+    ) +
+  scale_x_discrete(position = "top", drop = T) +
+  scale_y_discrete(position = 'right', limits = rev)+
+  labs(x = NULL, y = NULL,
+       subtitle = str_c('terms enriched @ adjusted p < ',sig)) +
+  theme(
+    plot.margin = margin(5,50,5,5),
+    strip.text.x = element_text(size = 10,colour = c("black")),
+    strip.text.y.left = element_text(angle = 0,size = 12),
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 0, size = 12),
+    axis.text.y = element_text(angle = 0, size = 12),
+    panel.background = element_blank(),
+    plot.title = element_text(angle = 0, vjust = -54, hjust = 0.03,size=12,face="bold"),
+    plot.title.position = "plot",
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    legend.box = 'vertical'
+  )
+
+```
+
+```{r, fig.width=12, fig.height=6, echo=FALSE, message=FALSE, results='asis'}
+s = biodom %>% select(Biodomain, abbr) %>% distinct() %>% filter(!is.na(Biodomain))
+
+for(i in 1:nrow(s)){
+  
+  tmp <- comp %>%
+    group_by(model) %>%
+    mutate(any_sig = any(n.sig.both > 0),
+           set1 = str_remove_all(set, '^[A-Za-z]{2}_') %>% str_trunc(., 30)) %>%
+    filter( grepl(str_c(s$abbr[i],'_'), set) )
+
+  p = ggplot(tmp, aes(set1, model)) +
+    geom_tile(colour = "black", fill = "white") +
+    geom_point(aes(fill = estimate, size = (.data$n.sig.both /.data$n.terms)*100 )
+               ,color = 'grey50', shape = 21) +
+    geom_point(data = subset(tmp, tau.padj <= 5e-2)
+               ,color="black", shape=0, size= 5, stroke = .75) +
+    facet_grid(rows = vars(group), scales = 'free', space = 'free', switch = 'y')+
+    scale_size( 
+      "Jaccard index",
+      range = c(.5, 4)
+      # , limits = c(1e-9,1)
+      , limits = c(1e-9,NA)
+      # , breaks = c(0.01,1,10)
+      ) +
+    scale_fill_gradient2(
+      name = "Kendall's \u03C4 coefficient",
+      low = "#85070C", high = "#164B6E", mid = 'grey95'
+      , guide = guide_colorbar(ticks = T)
+      # , limits = c(-1.1,1.1)
+      ) +
+    scale_x_discrete(position = "top", drop = T) +
+    scale_y_discrete(position = 'right', limits = rev)+
+    labs(x = NULL, y = NULL,
+         subtitle = str_c('terms enriched @ adjusted p < ',sig)) +
+    theme(
+      plot.margin = margin(5,50,5,5),
+      strip.text.x = element_text(size = 10,colour = c("black")),
+      strip.text.y.left = element_text(angle = 0,size = 12),
+      axis.ticks = element_blank(),
+      axis.text.x = element_text(angle = 45, hjust = 0, size = 12),
+      axis.text.y = element_text(angle = 0, size = 12),
+      panel.background = element_blank(),
+      plot.title = element_text(angle = 0, vjust = -54, hjust = 0.03,size=12,face="bold"),
+      plot.title.position = "plot",
+      panel.grid = element_blank(),
+      legend.position = "bottom",
+      legend.box = 'vertical'
+    )
+    
+  cat("  \n###",  s$Biodomain[i], "  \n")
+  print(p)
+  plot.new()
+  dev.off()
+  cat("  \n  \n")  
+}
+
+```
+
+### examples
+
+```{r fig.width=10, fig.height=4}
+s = 'Synapse'
+
+tmp <- comp %>% 
+  # filter(model == t) %>% 
+  unnest(terms) %>%
+  left_join(., biodom %>% 
+              select(GO = GO_ID, GOterm_Name, n_symbol,
+                     Biodomain, Subdomain, subdomain_idx, abbr:color) 
+            ) %>%
+  filter(set == s, Biodomain == s) %>%
+  distinct()
+
+p1 = ggplot(tmp, aes(NES1, NES2))+
+  geom_vline(xintercept = 0, lwd = .2)+
+  geom_hline(yintercept = 0, lwd = .2)+
+  labs(x = 'AMP-AD NES', y = 'biomarker NES', 
+       title = s, subtitle = str_c('terms enriched @ p.adjust <= ',sig) )+
+  scale_fill_identity()+
+  geom_point(
+    aes(fill = color ), #, size = -log10(PADJ1)
+    shape = 21, color = 'grey20', stroke = .5, alpha = .5)+
+  geom_smooth(method = 'lm', formula = y ~ x - 1,lwd = .5)+
+  facet_wrap(~model, nrow = 1)
+
+cont.table <- comp %>%
+  filter(set == s
+         # , model == t
+         ) %>%
+  select(model, olap) %>% 
+  mutate(olap = map(olap, ~as.table(.x) %>% as.data.frame())) %>% 
+  unnest(olap) %>% 
+  rename('ampad' = 'Var1', 'cell' = 'Var2') %>%
+  mutate(across(c(cell, ampad),
+                ~ case_when(.x == 'A' ~ 'Up', .x == 'B' ~ 'NonSig', .x == 'C' ~ 'Dn')))
+
+p2 = ggplot(cont.table, aes(cell, ampad, fill = Freq)) +
+  geom_tile()+ geom_text(aes(label = Freq), size = 3)+
+  facet_wrap(~model, nrow = 1)+
+  scale_fill_gradient(low = "white", high = "blue", guide = 'none') +
+  labs(x = 'AMP-AD terms', y = 'biomarker terms')+ 
+  theme_bw()
+
+cowplot::plot_grid(p1,p2, nrow = 2, align = 'hv', axis = 'lrtb')
+
+```
+
+```{r}
+tmp %>%
+  filter(PADJ1 < 0.05, PADJ2 < 0.05) %>%
+  select(model, GOterm_Name, Subdomain, n_symbol, ampad.NES = NES1, NES2) %>%
+  distinct() %>%
+  pivot_wider(names_from = 'model', values_from = 'NES2', names_glue = '{model}.NES') %>%
+  filter(n_symbol > 0) %>% 
+  mutate(across(contains('NES'), ~ signif(.x, digits = 3))) %>% 
+  arrange(desc(abs(ampad.NES))) %>%
+  DT::datatable(filter = 'top') 
+```
+
+```{r fig.width=10, fig.height=4}
+s = 'Endolysosome'
+
+tmp <- comp %>% 
+  # filter(model == t) %>% 
+  unnest(terms) %>%
+  left_join(., biodom %>% 
+              select(GO = GO_ID, GOterm_Name, n_symbol,
+                     Biodomain, Subdomain, subdomain_idx, abbr:color) 
+            ) %>%
+  filter(set == s, Biodomain == s) %>%
+  distinct()
+
+p1 = ggplot(tmp, aes(NES1, NES2))+
+  geom_vline(xintercept = 0, lwd = .2)+
+  geom_hline(yintercept = 0, lwd = .2)+
+  labs(x = 'AMP-AD NES', y = 'biomarker NES', 
+       title = s, subtitle = str_c('terms enriched @ p.adjust <= ',sig) )+
+  scale_fill_identity()+
+  geom_point(
+    aes(fill = color ), #, size = -log10(PADJ1)
+    shape = 21, color = 'grey20', stroke = .5, alpha = .5)+
+  geom_smooth(method = 'lm', formula = y ~ x - 1,lwd = .5)+
+  facet_wrap(~model, nrow = 1)
+
+cont.table <- comp %>%
+  filter(set == s
+         # , model == t
+         ) %>%
+  select(model, olap) %>% 
+  mutate(olap = map(olap, ~as.table(.x) %>% as.data.frame())) %>% 
+  unnest(olap) %>% 
+  rename('ampad' = 'Var1', 'cell' = 'Var2') %>%
+  mutate(across(c(cell, ampad),
+                ~ case_when(.x == 'A' ~ 'Up', .x == 'B' ~ 'NonSig', .x == 'C' ~ 'Dn')))
+
+p2 = ggplot(cont.table, aes(cell, ampad, fill = Freq)) +
+  geom_tile()+ geom_text(aes(label = Freq), size = 3)+
+  facet_wrap(~model, nrow = 1)+
+  scale_fill_gradient(low = "white", high = "blue", guide = 'none') +
+  labs(x = 'AMP-AD terms', y = 'biomarker terms')+ 
+  theme_bw()
+
+cowplot::plot_grid(p1,p2, nrow = 2, align = 'hv', axis = 'lrtb')
+
+```
+
+```{r}
+tmp %>%
+  filter(PADJ1 < 0.05, PADJ2 < 0.05) %>%
+  select(model, GOterm_Name, Subdomain, n_symbol, ampad.NES = NES1, NES2) %>%
+  distinct() %>%
+  pivot_wider(names_from = 'model', values_from = 'NES2', names_glue = '{model}.NES') %>%
+  mutate(across(contains('NES'), ~ signif(.x, digits = 3))) %>% 
+  arrange(desc(abs(ampad.NES))) %>%
+  DT::datatable(filter = 'top') 
+```
+
+```{r fig.width=10, fig.height=4}
+s = 'Structural Stabilization'
+
+tmp <- comp %>% 
+  # filter(model == t) %>% 
+  unnest(terms) %>%
+  left_join(., biodom %>% 
+              select(GO = GO_ID, GOterm_Name, n_symbol,
+                     Biodomain, Subdomain, subdomain_idx, abbr:color) 
+            ) %>%
+  filter(set == s, Biodomain == s) %>%
+  distinct()
+
+p1 = ggplot(tmp, aes(NES1, NES2))+
+  geom_vline(xintercept = 0, lwd = .2)+
+  geom_hline(yintercept = 0, lwd = .2)+
+  labs(x = 'AMP-AD NES', y = 'biomarker NES', 
+       title = s, subtitle = str_c('terms enriched @ p.adjust <= ',sig) )+
+  scale_fill_identity()+
+  geom_point(
+    aes(fill = color ), #, size = -log10(PADJ1)
+    shape = 21, color = 'grey20', stroke = .5, alpha = .5)+
+  geom_smooth(method = 'lm', formula = y ~ x - 1,lwd = .5)+
+  facet_wrap(~model, nrow = 1)
+
+cont.table <- comp %>%
+  filter(set == s
+         # , model == t
+         ) %>%
+  select(model, olap) %>% 
+  mutate(olap = map(olap, ~as.table(.x) %>% as.data.frame())) %>% 
+  unnest(olap) %>% 
+  rename('ampad' = 'Var1', 'cell' = 'Var2') %>%
+  mutate(across(c(cell, ampad),
+                ~ case_when(.x == 'A' ~ 'Up', .x == 'B' ~ 'NonSig', .x == 'C' ~ 'Dn')))
+
+p2 = ggplot(cont.table, aes(cell, ampad, fill = Freq)) +
+  geom_tile()+ geom_text(aes(label = Freq), size = 3)+
+  facet_wrap(~model, nrow = 1)+
+  scale_fill_gradient(low = "white", high = "blue", guide = 'none') +
+  labs(x = 'AMP-AD terms', y = 'biomarker terms')+ 
+  theme_bw()
+
+cowplot::plot_grid(p1,p2, nrow = 2, align = 'hv', axis = 'lrtb')
+
+```
+
+```{r}
+tmp %>%
+  filter(PADJ1 < 0.05, PADJ2 < 0.05) %>%
+  select(model, GOterm_Name, Subdomain, n_symbol, ampad.NES = NES1, NES2) %>%
+  distinct() %>%
+  pivot_wider(names_from = 'model', values_from = 'NES2', names_glue = '{model}.NES') %>%
+  mutate(across(contains('NES'), ~ signif(.x, digits = 3))) %>% 
+  arrange(desc(abs(ampad.NES))) %>%
+  DT::datatable(filter = 'top') 
+```
+
+```{r fig.width=10, fig.height=4}
+s = 'Mitochondrial Metabolism'
+
+tmp <- comp %>% 
+  # filter(model == t) %>% 
+  unnest(terms) %>%
+  left_join(., biodom %>% 
+              select(GO = GO_ID, GOterm_Name, n_symbol,
+                     Biodomain, Subdomain, subdomain_idx, abbr:color) 
+            ) %>%
+  filter(set == s, Biodomain == s) %>%
+  distinct()
+
+p1 = ggplot(tmp, aes(NES1, NES2))+
+  geom_vline(xintercept = 0, lwd = .2)+
+  geom_hline(yintercept = 0, lwd = .2)+
+  labs(x = 'AMP-AD NES', y = 'biomarker NES', 
+       title = s, subtitle = str_c('terms enriched @ p.adjust <= ',sig) )+
+  scale_fill_identity()+
+  geom_point(
+    aes(fill = color ), #, size = -log10(PADJ1)
+    shape = 21, color = 'grey20', stroke = .5, alpha = .5)+
+  geom_smooth(method = 'lm', formula = y ~ x - 1,lwd = .5)+
+  facet_wrap(~model, nrow = 1)
+
+cont.table <- comp %>%
+  filter(set == s
+         # , model == t
+         ) %>%
+  select(model, olap) %>% 
+  mutate(olap = map(olap, ~as.table(.x) %>% as.data.frame())) %>% 
+  unnest(olap) %>% 
+  rename('ampad' = 'Var1', 'cell' = 'Var2') %>%
+  mutate(across(c(cell, ampad),
+                ~ case_when(.x == 'A' ~ 'Up', .x == 'B' ~ 'NonSig', .x == 'C' ~ 'Dn')))
+
+p2 = ggplot(cont.table, aes(cell, ampad, fill = Freq)) +
+  geom_tile()+ geom_text(aes(label = Freq), size = 3)+
+  facet_wrap(~model, nrow = 1)+
+  scale_fill_gradient(low = "white", high = "blue", guide = 'none') +
+  labs(x = 'AMP-AD terms', y = 'biomarker terms')+ 
+  theme_bw()
+
+cowplot::plot_grid(p1,p2, nrow = 2, align = 'hv', axis = 'lrtb')
+
+```
+
+```{r}
+tmp %>%
+  filter(PADJ1 < 0.05, PADJ2 < 0.05) %>%
+  select(model, GOterm_Name, Subdomain, n_symbol, ampad.NES = NES1, NES2) %>%
+  distinct() %>%
+  pivot_wider(names_from = 'model', values_from = 'NES2', names_glue = '{model}.NES') %>%
+  mutate(across(contains('NES'), ~ signif(.x, digits = 3))) %>% 
+  arrange(desc(abs(ampad.NES))) %>%
+  DT::datatable(filter = 'top') 
+```
+
+```{r fig.width=10, fig.height=4}
+s = 'Immune Response'
+
+tmp <- comp %>% 
+  # filter(model == t) %>% 
+  unnest(terms) %>%
+  left_join(., biodom %>% 
+              select(GO = GO_ID, GOterm_Name, n_symbol,
+                     Biodomain, Subdomain, subdomain_idx, abbr:color) 
+            ) %>%
+  filter(set == s, Biodomain == s) %>%
+  distinct()
+
+p1 = ggplot(tmp, aes(NES1, NES2))+
+  geom_vline(xintercept = 0, lwd = .2)+
+  geom_hline(yintercept = 0, lwd = .2)+
+  labs(x = 'AMP-AD NES', y = 'biomarker NES', 
+       title = s, subtitle = str_c('terms enriched @ p.adjust <= ',sig) )+
+  scale_fill_identity()+
+  geom_point(
+    aes(fill = color ), #, size = -log10(PADJ1)
+    shape = 21, color = 'grey20', stroke = .5, alpha = .5)+
+  geom_smooth(method = 'lm', formula = y ~ x - 1,lwd = .5)+
+  facet_wrap(~model, nrow = 1)
+
+cont.table <- comp %>%
+  filter(set == s
+         # , model == t
+         ) %>%
+  select(model, olap) %>% 
+  mutate(olap = map(olap, ~as.table(.x) %>% as.data.frame())) %>% 
+  unnest(olap) %>% 
+  rename('ampad' = 'Var1', 'cell' = 'Var2') %>%
+  mutate(across(c(cell, ampad),
+                ~ case_when(.x == 'A' ~ 'Up', .x == 'B' ~ 'NonSig', .x == 'C' ~ 'Dn')))
+
+p2 = ggplot(cont.table, aes(cell, ampad, fill = Freq)) +
+  geom_tile()+ geom_text(aes(label = Freq), size = 3)+
+  facet_wrap(~model, nrow = 1)+
+  scale_fill_gradient(low = "white", high = "blue", guide = 'none') +
+  labs(x = 'AMP-AD terms', y = 'biomarker terms')+ 
+  theme_bw()
+
+cowplot::plot_grid(p1,p2, nrow = 2, align = 'hv', axis = 'lrtb')
+
+```
+
+```{r}
+tmp %>%
+  filter(PADJ1 < 0.05, PADJ2 < 0.05) %>%
+  select(model, GOterm_Name, Subdomain, n_symbol, ampad.NES = NES1, NES2) %>%
+  distinct() %>%
+  pivot_wider(names_from = 'model', values_from = 'NES2', names_glue = '{model}.NES') %>%
+  mutate(across(contains('NES'), ~ signif(.x, digits = 3))) %>% 
+  arrange(desc(abs(ampad.NES))) %>%
+  DT::datatable(filter = 'top') 
+```
+
+# Biomarker x Biomarker correlations
+
+## protein{.tabset}
+
+```{r}
+cor_combined <- function(data, mapping, method = "pearson", use = "pairwise.complete.obs", maxPointSize = 25, digits = 2, ...) {
+  
+  # Extract x and y variable names from mapping
+  x_var_name <- rlang::as_name(mapping$x)
+  y_var_name <- rlang::as_name(mapping$y)
+  
+  # Extract x and y data using the variable names
+  x <- data[[x_var_name]]
+  y <- data[[y_var_name]]
+  
+  # Check if data is numeric
+  if(is.numeric(x) & is.numeric(y)){
+    
+    # Calculate correlation
+    cor <- cor(x, y, method = method, use = use)
+    
+    # Calculate color based on correlation
+    colFn <- colorRampPalette(c("#85070C", "white", "#164B6E"), interpolate = "spline")
+    
+    # Calculate point size based on absolute correlation
+    abs_cor <- abs(cor)
+    
+    # Create a 1-row data frame for geom_point
+    df <- data.frame(x = 0, y = 0)
+    df$cor_color <- cor
+    df$cor_size <- abs_cor
+    
+    # Calculate correlation and p-value using rcorr (from Hmisc)
+    rcorr_result <- Hmisc::rcorr(x, y, type = method)
+    
+    # Format correlation text with significance stars using code from GGally
+    cor_p <- rcorr_result$P[1, 2]
+    cor_coef <- signif(rcorr_result$r[1, 2], digits = digits)
+    cor_text <- as.character(round(cor_coef, 2))
+    
+    # Determine significance stars
+    sig_stars <- symnum(cor_p, corr = FALSE, na = FALSE, 
+                        cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, 1), 
+                        symbols = c("***", "**", "*", ".", " "))
+    cor_text <- paste(cor_text, sig_stars, sep = "")
+    
+    # Create a grob for the correlation text
+    cor_grob <- grid::textGrob(label = cor_text,
+                               gp = grid::gpar(col = "black", fontsize = 10))
+    
+    # Create a plot for the point layer
+    point_plot <- ggplot(df, aes(x = x, y = y)) +
+      geom_point(aes(color = cor_color, size = cor_size), alpha = .5, ...) +
+      scale_color_gradientn(colours = colFn(100), limits = c(-1, 1)) +
+      scale_size_area(max_size = maxPointSize, limits = c(0, 1)) +
+      guides(color = "none", size = "none") +
+      theme_bw() +
+      theme(panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank(),
+            panel.border = element_rect(colour = "black", fill = NA, linewidth = 0.5),
+            axis.title = element_blank(),
+            axis.text = element_blank(),
+            axis.ticks = element_blank())
+    
+    # Add the annotation layer with the correlation text
+    final_plot <- point_plot +
+      annotation_custom(grob = cor_grob, xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf)
+    
+    return(final_plot)
+    
+  } else {
+    # Return an empty plot for non-numeric data using ggally_blank
+    return(GGally::ggally_blank(data, mapping))
+  }
+}
+```
+
+```{r}
+model_vs_model <- data %>%
+  select(biomarker, Symbol, beta) %>% distinct() %>%
+  pivot_wider(names_from = biomarker, values_from = beta, values_fn = mean) %>%
+  inner_join(bd.genes,., multiple = 'all') %>%
+  select(-RNA_TE, -Pro_TE) %>%
+  filter(!is.na(set)) %>%
+  group_by(set) %>%
+  nest(data = c(Symbol:pTau217)) %>%
+  mutate(
+  data = map(data, ~distinct(.x)),
+  n = map_dbl(data, ~nrow(.x))) %>%
+  filter(n >= 5) %>% 
+  right_join(biodom %>% select(Biodomain, set = sd) %>% distinct(), .) %>% 
+  mutate(Biodomain = if_else(is.na(Biodomain), set, Biodomain))
+```
+
+```{r}
+
+bm_vs_bm <- inner_join(
+    data %>% select(biomarker, Symbol, t_stat) %>% distinct(),
+    data %>% select(biomarker, Symbol, t_stat) %>% distinct(),
+    by = 'Symbol') %>%
+  mutate(
+    bm.1 = if_else(biomarker.x > biomarker.y, biomarker.y, biomarker.x),
+    bm.2= if_else(biomarker.x > biomarker.y, biomarker.x, biomarker.y),
+    t_stat.1 = if_else(biomarker.x > biomarker.y, t_stat.y, t_stat.x),
+    t_stat.2= if_else(biomarker.x > biomarker.y, t_stat.x, t_stat.y)
+  ) %>%
+  select(-biomarker.x, -biomarker.y, -t_stat.x, -t_stat.y) %>% distinct() %>% 
+  left_join(.,bd.genes %>% select(Symbol, set)) %>% 
+  group_by(set, bm.1, bm.2) %>% 
+  nest(data = c(Symbol, t_stat.1, t_stat.2)) %>% 
+  mutate(
+    data = map(data, ~distinct(.x)),
+    n = map_dbl(data, ~nrow(.x))
+    ) %>% 
+  filter(bm.1!=bm.2, n > 10) %>% 
+  mutate( 
+    cor_test = map(data, ~cor.test(.x[['t_stat.1']], .x[['t_stat.2']], method = 'pearson')),
+    correlation = map_dbl(cor_test, "estimate"),
+    p_value = map_dbl(cor_test, "p.value")
+    )
+
+```
+
+```{r fig.width=8, fig.height=6}
+bm_vs_bm %>% ungroup() %>% 
+    ggplot(aes(correlation))+
+    geom_vline(xintercept = c(-.5,0,.5), 
+               lty = 2, lwd = .1)+
+    geom_density(fill = 'grey70', alpha = .5)+
+    facet_grid(bm.2~bm.1)
+```
+
+```{r}
+bm_vs_bm %>% arrange(desc(abs(correlation)), p_value) %>% 
+  saveRDS('biomarker_pairwise_correlation_by_biodomains.RDS')
+```
+
+
+### all proteins
+
+```{r fig.width=10, fig.height=8, message=FALSE, warning=FALSE}
+data %>% 
+  filter(!is.na(GENE)) %>% 
+  select(GENE,biomarker, beta) %>% 
+  pivot_wider(names_from = biomarker, values_from = beta) %>% 
+  select(-GENE) %>% 
+  GGally::ggpairs( upper = list(continuous = cor_combined), mapping = aes(alpha = .01), progress = F)
+```
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+# for(bd in unique(model_vs_model$Biodomain)){
+  
+  # cat("  \n###",  bd, "{.tabset}  \n")
+  
+  # tmp <- model_vs_model %>% 
+    # filter(Biodomain == bd) %>% 
+    # arrange(desc(n))
+  
+  
+  # for(j in 1:nrow(tmp)){
+    # p <- tmp$data[[j]] %>% 
+      # select(-symbol, -ENSG) %>% 
+      # GGally::ggpairs(
+          # upper = list(continuous = cor_combined),
+          # progress = F)+
+      # ggtitle(str_c(tmp$set[j], ' (N = ', tmp$n[j], ')'))
+      
+    # cat("  \n####",  tmp$set[j], "  \n")
+    # print(p)
+    # plot.new()
+    # dev.off()
+    # cat("  \n  \n")  
+    
+  # }
+  
+  
+# }
+```
+
+
+
+## enriched terms{.tabset}
+
+```{r}
+cor_combined <- function(data, mapping, method = "kendall", use = "pairwise.complete.obs", maxPointSize = 25, digits = 2, minObs = 5, ...) {
+  
+  # Extract x and y variable names from mapping
+  x_var_name <- rlang::as_name(mapping$x)
+  y_var_name <- rlang::as_name(mapping$y)
+  
+  # Extract x and y data using the variable names
+  x <- data[[x_var_name]]
+  y <- data[[y_var_name]]
+  
+  # Check if data is numeric
+  if(is.numeric(x) & is.numeric(y)){
+    
+    # Count non-NA values
+    non_na_count <- sum(complete.cases(x, y))
+    
+    # If not enough observations, return ggally_blank
+    if (non_na_count < minObs) {
+      return(GGally::ggally_blank(data, mapping))
+    }
+    
+    # Initialize cor_text for error handling
+    cor_text <- "NA"
+    
+    # Try to calculate the correlation and handle errors
+    tryCatch({
+      # Calculate correlation
+      cor <- cor(x, y, method = method, use = use)
+      
+      # Calculate p-value using cor.test for Kendall's method
+      if (method == "kendall") {
+        cor_test_result <- cor.test(x, y, method = "kendall", exact = FALSE)
+        cor_p <- cor_test_result$p.value
+      } else {
+        # Use Hmisc::rcorr for Pearson or Spearman
+        rcorr_result <- Hmisc::rcorr(x, y, type = method)
+        cor_p <- rcorr_result$P[1, 2]
+      }
+      
+      # Format correlation text with significance stars
+      cor_coef <- signif(cor, digits = digits)
+      cor_text <- as.character(round(cor_coef, 2))
+      
+      # Determine significance stars
+      sig_stars <- symnum(cor_p, corr = FALSE, na = FALSE, 
+                          cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, 1), 
+                          symbols = c("***", "**", "*", ".", " "))
+      cor_text <- paste(cor_text, sig_stars, sep = "")
+      
+    }, error = function(e) {
+      # Print the error message
+      cat("Error during correlation calculation:", conditionMessage(e), "\n")
+      # Set cor_text to "NA" (or any other value indicating an error)
+      cor_text <<- "NA"
+    })
+    
+    # Check if cor_text is still "NA" after tryCatch
+    if (cor_text == "NA") {
+      return(GGally::ggally_blank(data, mapping))
+    }
+    
+    # Calculate color based on correlation
+    colFn <- colorRampPalette(c("#85070C", "white", "#164B6E"), interpolate = "spline")
+    
+    # Calculate point size based on absolute correlation
+    abs_cor <- abs(cor)
+    
+    # Create a 1-row data frame for geom_point
+    df <- data.frame(x = 0, y = 0)
+    df$cor_color <- cor
+    df$cor_size <- abs_cor
+    
+    # Create a grob for the correlation text
+    cor_grob <- grid::textGrob(label = cor_text,
+                               gp = grid::gpar(col = "black", fontsize = 10))
+    
+    # Create a plot for the point layer
+    point_plot <- ggplot(df, aes(x = x, y = y)) +
+      geom_point(aes(color = cor_color, size = cor_size), ...) +
+      scale_color_gradientn(colours = colFn(100), limits = c(-1, 1)) +
+      scale_size_area(max_size = maxPointSize, limits = c(0, 1)) +
+      guides(color = "none", size = "none") +
+      theme_bw() +
+      theme(panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank(),
+            panel.border = element_rect(colour = "black", fill = NA, linewidth = 0.5),
+            axis.title = element_blank(),
+            axis.text = element_blank(),
+            axis.ticks = element_blank())
+    
+    # Add the annotation layer with the correlation text
+    final_plot <- point_plot +
+      annotation_custom(grob = cor_grob, xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf)
+    
+    return(final_plot)
+    
+  } else {
+    # Return an empty plot for non-numeric data using ggally_blank
+    return(GGally::ggally_blank(data, mapping))
+  }
+}
+```
+
+```{r}
+sig = .1
+
+mvm_gsea <- gsea %>% 
+  mutate(r = map(res, ~.x@result)) %>% 
+  select(-gl, -res) %>% 
+  unnest(r) %>% 
+  select(biomarker, terms = ID, nes = NES, padj = p.adjust) %>% 
+  filter(padj <= sig) %>% 
+  pivot_wider(id_cols = terms, names_from = biomarker, values_from = nes) %>% #valeus_fill = 0
+  inner_join(bd.term.list %>% unnest(terms), .) %>% 
+  nest(data = c(-set)) %>% 
+  mutate(n = map_dbl(data, ~nrow(.x))) %>% 
+  right_join(biodom %>% select(Biodomain, set = sd) %>% distinct(), .) %>% 
+  mutate(Biodomain = if_else(is.na(Biodomain), set, Biodomain)) %>% 
+  filter(n >= 5)
+```
+
+### all terms
+
+```{r fig.width=10, fig.height=8, message=FALSE, warning=FALSE}
+# gsea %>% 
+  # mutate(r = map(res, ~.x@result)) %>% 
+  # select(-gl, -res) %>% 
+  # unnest(r) %>% 
+  # select(biomarker, terms = ID, nes = NES, padj = p.adjust) %>% 
+  # filter(padj <= sig) %>% 
+  # pivot_wider(id_cols = terms, names_from = biomarker, values_from = nes) %>% 
+  # select(-terms) %>% 
+  # GGally::ggpairs( upper = list(continuous = GGally::wrap(cor_combined, method = "kendall")), 
+                   # mapping = aes(alpha = .01), progress = F)+
+   # ggtitle( 'All terms', subtitle = str_c('terms enriched @ adjusted p <= ', sig) )
+```
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+# for(bd in unique(mvm_gsea$Biodomain)){
+  
+  # cat("  \n###",  bd, "{.tabset}  \n")
+  
+  # tmp <- mvm_gsea %>% 
+    # filter(Biodomain == bd) %>% 
+    # arrange(desc(n))
+  
+  # for(j in 1:nrow(tmp)){
+    # p <- tmp$data[[j]] %>% 
+      # select(-terms) %>% 
+      # GGally::ggpairs( upper = list(continuous = GGally::wrap(cor_combined, method = "kendall")), 
+                       # mapping = aes(alpha = .01), progress = F)+
+      # ggtitle(str_c(tmp$set[j], ' (N = ', tmp$n[j], ' sig terms)'),
+              # subtitle = str_c('terms enriched @ adjusted p <= ', sig)
+              # )
+      
+    # cat("  \n####",  tmp$set[j], "  \n")
+    # print(p)
+    # plot.new()
+    # dev.off()
+    # cat("  \n  \n")  
+    
+  # }
+# }
+```
+
+
+# output
+```{r}
+
+```
+
+
+# session
+```{r}
+sessionInfo()
+```
+

@@ -17,7 +17,7 @@
 #' ---------------------------
 #'
 #' Notes:
-#'   v0.0.2 - 
+#'   v0.0.2 - incorporate splitting of plots for more than 15 scores
 #'
 #' ---------------------------
 #' load up the packages we will need:  (uncomment as required)
@@ -30,6 +30,7 @@ library(patchwork)
 library(ggpmisc)
 library(ggridges)
 library(paletteer)
+library(stringr)
 
 # read in args
 option_list <- list(
@@ -61,6 +62,12 @@ option_list <- list(
     help = "File width for box plots in inches [default: %default]"
   ),
   make_option(
+    c("-b", "--batch-size"),
+    default = 15,
+    dest = "batch",
+    help = "For many scores, batch size for splitting plots [default: %default]"
+  ),
+  make_option(
     c("-d", "--data-path"),
     type = "character",
     dest = "data_path",
@@ -83,6 +90,7 @@ fields <- c(
   "nameset",
   "output",
   "box_width",
+  "batch",
   "data_path"
 )
 
@@ -142,40 +150,97 @@ plot_box = function (dt, x, y, group, title = NULL, ...) {
 #' Plot Density Ridges for Score Distribution
 #'
 #' Creates a ggplot2 density ridges plot showing the distribution of scores
-#' across different categories defined by the x variable.
+#' across different categories defined by the x variable. If there are more
+#' than 15 categories, splits into batches and combines horizontally.
 #'
 #' @param df A data frame containing the data to be plotted.
 #' @param x A character string specifying the column name in df to be used for
-#'        grouping on the y-axis of the ridge plot.
+#'        the x-axis values (continuous distribution).
 #' @param cols Optional. A vector of custom colors to add on. If NULL, the default
 #'        palette will be used.
 #' @param pal A character string specifying the paletteer palette to use. 
 #'        Default is "colorBlindness::paletteMartin".
-#' @param custom_color Optional. A single color to append to the palette.
+#' @param batch_size Integer. Maximum number of categories per plot. Default is 15.
+#' @param score_labels Optional. A named vector of custom labels for the score categories.
+#'        Names should match values in the Score column, values are the display labels.
 #'
-#' @return A ggplot2 object representing a density ridges plot.
+#' @return A ggplot2 object or patchwork object representing density ridges plot(s).
 #'
 #' @import ggplot2
 #' @import ggridges
 #' @import paletteer
+#' @import patchwork
+#' @import dplyr
+#' @import stringr
 #'
 #' @examples
 #' \dontrun{
 #' # Basic usage
 #' plot_comp(my_dataframe, "CellType")
 #'
-#' # With custom palette
-#' plot_comp(my_dataframe, "CellType", pal = "viridis::viridis")
-#'
-#' # With custom color added to palette
-#' plot_comp(my_dataframe, "CellType", custom_color = "#FF5733")
+#' # With custom labels
+#' labels <- c("T_cell" = "T Cell", "B_cell" = "B Cell", "NK_cell" = "NK Cell")
+#' plot_comp(my_dataframe, "CellType", score_labels = labels)
 #' }
 #'
 #' @export
-plot_comp <- function(df, x, cols = NULL, pal = "colorBlindness::paletteMartin") {
-  # plot
+plot_comp <- function(df, x, cols = NULL, pal = "colorBlindness::paletteMartin", 
+                      batch_size = 15, score_labels = NULL) {
+  
+  # Apply custom labels if provided
+  if (!is.null(score_labels)) {
+    df <- df %>%
+      dplyr::mutate(Score = dplyr::recode(.data[["Score"]], !!!score_labels))
+  }
+  
+  # Get unique values of the Score column (categories to be batched)
+  unique_scores <- unique(df[["Score"]])
+  n_scores <- length(unique_scores)
+  
+  # If <= batch_size, create single plot
+  if (n_scores <= batch_size) {
+    return(create_single_ridge_plot(df, x, cols, pal, show_labels = TRUE))
+  }
+  
+  # Split into batches
+  batches <- split(unique_scores, ceiling(seq_along(unique_scores) / batch_size))
+  
+  # Create plots with consistent dimensions
+  plots <- list()
+  for (i in seq_along(batches)) {
+    batch_data <- df[df[["Score"]] %in% batches[[i]], ]
+    plots[[i]] <- create_single_ridge_plot(batch_data, x, cols, pal, show_labels = FALSE) +
+      theme(plot.margin = margin(t = 10, r = 5, b = 10, l = 5, unit = "pt"))
+  }
+  
+  # Simple patchwork combination
+  require(patchwork)
+  combined_plot <- wrap_plots(plots, 
+    nrow = 1, 
+    widths = rep(1, length(plots)),
+    heights = c(rep(batch_size, length(plots) - 1), 3)
+  )
+  
+  final_plot <- combined_plot + 
+    plot_annotation(
+      title = "Score Distribution by Type",
+      caption = paste("Values:", x),
+      theme = theme(
+        plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+        plot.caption = element_text(hjust = 0.5, size = 12)
+      )
+    )
+  
+  return(final_plot)
+}
+#' Helper function to create individual ridge plots
+#' @keywords internal
+create_single_ridge_plot <- function(df, x, cols = NULL, pal = "colorBlindness::paletteMartin", show_labels = TRUE) {
+  
+  # Create the plot
   p <- ggplot(df, aes(x = .data[[x]], y = Score, fill = Score, color = Score)) +
     geom_density_ridges(alpha = 0.7, scale = 0.9, rel_min_height = 0.01) +
+    scale_y_discrete(labels = function(x) str_wrap(x, width = 26)) +
     theme_ridges() +
     theme(
       legend.position = "none",
@@ -183,25 +248,35 @@ plot_comp <- function(df, x, cols = NULL, pal = "colorBlindness::paletteMartin")
       panel.grid.minor = element_blank(),
       axis.title.x = element_text(hjust = 0.5),
       plot.title = element_text(hjust = 0.5)
-    ) +
-    labs(
-      title = "NES Distribution by Cell Type",
-      x = paste("Specificity", x),
-      y = "Cell Type"
     )
+  
+  # Add labels only if show_labels is TRUE
+  if (show_labels) {
+    p <- p + labs(
+      title = "Score Distribution by Type",
+      x = paste("Values:", x),
+      y = "Score Type"
+    )
+  } else {
+    p <- p + labs(
+      title = NULL,
+      x = NULL,
+      y = "Score Type"
+    )
+  }
   
   # Get colors from paletteer
   require(paletteer)
-  base_colors <- paletteer_d(pal)
   
-  # Add custom color if provided
+  # Add colors
   if (!is.null(cols)) {
+    base_colors <- paletteer_d(pal)
     all_colors <- c(base_colors, cols)
     p <- p + scale_color_manual(values = all_colors)
     p <- p + scale_fill_manual(values = all_colors)
   } else {
-    p <- p + scale_color_paletteer(palette_name)
-    p <- p + scale_fill_paletteer(palette_name)
+    p <- p + scale_color_paletteer_d(pal)
+    p <- p + scale_fill_paletteer_d(pal)
   }
   
   return(p)
@@ -282,8 +357,30 @@ a <- result[, 1:27]
 x <- fread("../../genomic/mypcair.PCs.csv", colClasses = c(PIDN = "character"))
 a <- merge(a, x, by = "PIDN")
 
+# setup for eigengenes vs NES scores
+if (score %like% "eigengenes") {
+  tail <- "csv" 
+  score_val <- "Eigengene"
+  scores <- fread("../../cell_type_prot/STRING_merged_scaled_scores.csv")
+  scores <- unique(scores[, .(Biomarker, cluster, term)])
+  scores[, name := paste0("ME", Biomarker, "-", cluster)]
+  scor <- scores[, term]
+  names(scor) <- scores[, name]
+} else if (score %like% "WSS") {
+  tail <- "csv" 
+  score_val <- "Weighted Sum of Scores"
+  scores <- fread("../../cell_type_prot/STRING_merged_scaled_scores.csv")
+  scores <- unique(scores[, .(Biomarker, cluster, term)])
+  scores[, name := paste0(Biomarker, ".", cluster)]
+  scor <- scores[, term]
+  names(scor) <- scores[, name]
+} else {
+  tail <- "normalized_scores.csv"
+  score_val <- "NES"
+  scor <- NULL
+}
+
 # Map in PCs assumes your primary data table exists 
-if (score %like% "eigengenes") tail <- "csv" else tail <- "normalized_scores.csv"
 x <- fread(
   file.path(data_path, 
     paste("dataProt_SS-205063", score, tail, sep = ".")
@@ -329,7 +426,7 @@ setattr(b, 'names', input)
 b <- rbindlist(b, idcol = 'Score')
 # b[, .N, by = Score]
 b[, Score := factor(Score, levels = sort(unique(Score)))]
-setnames(b, "value", "NES")
+setnames(b, "value", score_val)
 
 # for this plot, reclassify MCI-AD as MCI
 b[, Diagnosis_group := gsub("MCI-AD", "MCI", Diagnosis_group)]
@@ -339,23 +436,23 @@ b$Diagnosis_group <- factor(b$Diagnosis_group, levels = c("HC", "MCI", "AD"))
 # plot vs diagnosis boxplot ----------------------------------------
 p1 = plot_box(b, 
   x = "Score", 
-  y = "NES", 
+  y = score_val, 
   group = "Diagnosis_group",
   xlab=paste("Diagnosis"),
-  ylab=paste("Normalized Enrichment Score")
+  ylab=paste(score_val)
 )
 ggsave(
   filename = file.path(output, paste(nameset, score, "Diag_box.pdf", sep=".")), 
   plot = p1, 
   width = box_width, 
-  height = 7, 
+  height = box_width, 
   device = cairo_pdf
 )
 ggsave(
   filename = file.path(output, paste(nameset, score, "Diag_box.png", sep=".")), 
   plot = p1, 
   width = box_width, 
-  height = 7, 
+  height = box_width, 
   dpi = 144, 
   type = cairo
 )
@@ -364,18 +461,26 @@ ggsave(
 # maybe distribution plots ----------------------------------------
 # plot_comp(b, "NES")
 extra_colors = paletteer_d("ggsci::planetexpress_futurama") 
+p1 <- plot_comp(
+  df = b, 
+  x = score_val, 
+  cols = extra_colors, 
+  score_labels = scor,
+  batch_size = batch
+)
+
 ggsave(
   filename = file.path(output, paste(nameset, score, "Dist_joy.pdf", sep=".")), 
-  plot = plot_comp(b, "NES", cols = extra_colors), 
-  width = 6, 
-  height = box_width, 
+  plot = p1, 
+  width = box_width, 
+  height = 8, 
   device = cairo_pdf
 )
 ggsave(
   filename = file.path(output, paste(nameset, score, "Dist_joy.png", sep=".")), 
-  plot = plot_comp(b, "NES", cols = extra_colors), 
-  width = 6, 
-  height = box_width, 
+  plot = p1, 
+  width = box_width, 
+  height = 10, 
   dpi = 144, 
   type = cairo
 )
@@ -385,11 +490,11 @@ ggsave(
 lapply(c("Age", "CDRSUM", "MOCATOTS"), function(i) {
   p1 <- plot_corr(b, 
     x = i, 
-    y = "NES", 
+    y = score_val, 
     facet = "Score",
     group = "Diagnosis_group",
     xlab = paste(i, "at visit"),
-    ylab = paste("Score NES"),
+    ylab = paste("Score", score_val),
     trendline_type = "overall"
   )
   ggsave(

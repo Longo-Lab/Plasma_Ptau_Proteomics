@@ -14,18 +14,18 @@
 # # load modules
 # ml parallel R/4.2.2 python/3.7.8
 # set -ex
+set -e
 
 # # Instead of $SLURM_NTASKS, use $SLURM_NNODES to determine how
 # # many jobs should be run simultaneously.
 # srun="srun -N1 -n1 --cpus-per-task $SLURM_CPUS_PER_TASK"
 parallel="parallel --delay 2 -j 1 --link"
-
 # root_dir='/labs/flongo/PS19_C31_stim/Gene_level/DGE'
 
 # where and which gene lists to use for *.geneset file
 geneset_dir="."
 geneset_prefix='padj'
-genesets=('Plasma_GFAP' 'Plasma_NFL' 'PlasmaPTau181' 'Plasma_pTau217' 'PlasmaAB140P' 'PlasmaAB142P' 'PlasmaABRatio' 'Plasma_pTau217_AB42Ratio')
+genesets=('PlasmaGFAP' 'PlasmaNfL' 'PlasmaPTau181' 'PlasmapTau217' 'PlasmaAB140P' 'PlasmaAB142P' 'PlasmaABRatio' 'PlasmapTau217_AB42Ratio')
 
 # where and which covars to use (if not in this dir, will check in geneset dir)
 covar_dir='ref'
@@ -66,7 +66,7 @@ awk 'NR==FNR{A[$1];next}($1 in A)' $ensg ref/${annotname}.genes.annot \
   > ${annotname}_temp_annot
 parallel -j 7 cp ${annotname}_temp_annot \
   {}_${annotname}.genes.annot \
-  ::: 'ALS' 'ALZ' 'FTD' 'LBD' 'PD' 'rAOO' 'BMI'
+  ::: 'ALS_g1000' 'ALZ_g1000' 'FTD_g1000' 'LBD_g1000' 'PD_g1000' 'rAOO_g1000' 'BMI_g1000'
 rm ${annotname}_temp_annot
 
 # running magma and then plotting results
@@ -81,7 +81,7 @@ $parallel python3 02a-magma_geneset.py \
   -c ${covars[*]} \
   -o magma_geneset_${batchname}_MAGMA \
   --gwas-dir 'ref' \
-  --gwas 'ALS' 'ALZ' 'FTD' 'LBD' 'PD' 'rAOO' 'BMI' \
+  --gwas 'ALS_g1000' 'ALZ_g1000' 'FTD_g1000' 'LBD_g1000' 'PD_g1000' 'rAOO_g1000' 'BMI_g1000' \
   --gref 'ref/g1000_eur/g1000_eur' \
   ::: '0' \
   ::: '0'

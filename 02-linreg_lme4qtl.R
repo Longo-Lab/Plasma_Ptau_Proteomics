@@ -3,7 +3,7 @@
 #'
 #' Script name: 02-linreg_glm.R
 #'
-#' Version: 0.0.7
+#' Version: 0.0.8
 #'
 #' Purpose of script: calculate correlation of plasma ptau with SomaLogic plasma
 #' proteomic levels
@@ -18,6 +18,7 @@
 #' ---------------------------
 #'
 #' Notes:
+#'   v0.0.8 - fixing logging bugs and adding quasi-complete separation reporting table
 #'   v0.0.7 - adding cohen's d and fixing logging bugs
 #'   v0.0.6 - adding fallback reporting for quasi-complete separation
 #'   v0.0.5 - adding logistic regression option with lme4qtl, relmatGlmer
@@ -40,23 +41,25 @@
 #' ---------------------------
 
 #' load up the packages we will need:  (uncomment as required)
-library(tictoc)
-tic()
-tic()
-library(data.table)
-library(tools)
-library(stringr)
-library(lme4)
-# library(lmerTest) # loads lme4
-library(lme4qtl)
-library(GENESIS)
-library(pROC)
-library(caret)
-library(future.apply)
-options(future.cmdargs = character(0))
-library(futile.logger)
-library(rstatix)
-library(optparse)
+suppressPackageStartupMessages({
+  library(tictoc)
+  tic()
+  tic()
+  library(data.table)
+  library(tools)
+  library(stringr)
+  library(lme4)
+  # library(lmerTest) # loads lme4
+  library(lme4qtl)
+  library(GENESIS)
+  library(pROC)
+  library(caret)
+  library(future.apply)
+  options(future.cmdargs = character(0))
+  library(futile.logger)
+  library(rstatix)
+  library(optparse)
+})
 
 # Nameset helper function
 nameset_default <- function(input) {
@@ -300,17 +303,21 @@ check_separation <- function(dat, outcome, exposure) {
 #'
 #' @returns A list: 'Estimate' (beta), 'Std. Error' (se), 't value' (test statistic), 'Pr(>Chisq)' (p-value), 'nobs' (number of observations)
 get_linreg <- function(dat, m0 = NULL, outcome, exposure, covs = c(), mat, logistic = FALSE) {
+  
+  log_msgs <- character(0)  # Collect log messages
+  
   if (logistic) {
     # Check for quasi-complete separation
     if (check_separation(dat, outcome, exposure)) {
-      flog.info(sprintf("Quasi-complete separation detected for %s.", exposure))
+      log_msgs <- c(log_msgs, sprintf("Quasi-complete separation detected for %s.", exposure))
       return(list(
         Estimate = NA,
         `Std. Error` = NA,
         `z value` = NA,
-        `Pr(>|z|)` = NA,
+        `Pr(>|z|)` = 0,
         nobs = nrow(dat),
-        flag = "separated"
+        flag = "separated",
+        logs = log_msgs
       ))
     }
     
@@ -321,12 +328,11 @@ get_linreg <- function(dat, m0 = NULL, outcome, exposure, covs = c(), mat, logis
           as.formula(paste(outcome, "~", paste(c(exposure, covs, "(1|PIDN)"), collapse = " + "))),
           data = dat,
           relmat = list(PIDN = mat),
-          family = binomial(),
-          control = glmerControl(optCtrl = list(maxfun = 50000))  
+          family = binomial()
         )
       })
     }, error = function(e) {
-      flog.info(sprintf("relmatGlmer failed for %s: %s", exposure, e$message))
+      log_msgs <<- c(log_msgs, sprintf("relmatGlmer failed for %s: %s", exposure, e$message))
       NULL
     })
     
@@ -335,12 +341,12 @@ get_linreg <- function(dat, m0 = NULL, outcome, exposure, covs = c(), mat, logis
     if (is.null(m)) {
       use_glm <- TRUE
     } else if (isSingular(m)) {
-      flog.info(sprintf("Singular fit detected for %s, using GLM", exposure))
+      log_msgs <- c(log_msgs, sprintf("Singular fit detected for %s, using GLM", exposure))
       use_glm <- TRUE
     } else {
       # Check for convergence warnings
       if (!is.null(m@optinfo$conv$lme4$messages)) {
-        flog.info(sprintf("Convergence issues for %s: %s. Using GLM", 
+        log_msgs <- c(log_msgs, sprintf("Convergence issues for %s: %s. Using GLM", 
                        exposure, 
                        paste(m@optinfo$conv$lme4$messages, collapse = "; ")))
         use_glm <- TRUE
@@ -356,7 +362,7 @@ get_linreg <- function(dat, m0 = NULL, outcome, exposure, covs = c(), mat, logis
           family = binomial()
         )
       }, error = function(e) {
-        flog.info(sprintf("GLM also failed for %s: %s", exposure, e$message))
+        log_msgs <<- c(log_msgs, sprintf("GLM also failed for %s: %s", exposure, e$message))
         NULL
       })
       
@@ -371,29 +377,61 @@ get_linreg <- function(dat, m0 = NULL, outcome, exposure, covs = c(), mat, logis
         Estimate = NA,
         `Std. Error` = NA,
         `z value` = NA,
-        `Pr(>|z|)` = NA,
+        `Pr(>|z|)` = 1,
         nobs = nrow(dat),
-        flag = "failed"
+        flag = "failed",
+        logs = log_msgs
       ))
     }
     
-    return(as.list(c(summary(m)$coefficients[2, ], nobs = nobs(m), flag = fl)))
+    result <- as.list(c(summary(m)$coefficients[2, ], nobs = nobs(m), flag = fl))
+    result$logs <- log_msgs
+    return(result)
     
   } else {
-    m <- relmatLmer(
-      as.formula(paste(outcome, "~", paste(c(exposure, covs, "(1|PIDN)"), collapse = " + "))),
-      data = dat,
-      relmat = list(PIDN = mat)
-    )
+    # Linear regression case
+    m <- tryCatch({
+      withCallingHandlers({
+        relmatLmer(
+          as.formula(paste(outcome, "~", paste(c(exposure, covs, "(1|PIDN)"), collapse = " + "))),
+          data = dat,
+          relmat = list(PIDN = mat)
+        )
+      }, warning = function(w) {
+        log_msgs <<- c(log_msgs, w$message)
+        invokeRestart("muffleWarning")
+      }, message = function(m) {
+        log_msgs <<- c(log_msgs, m$message)
+        invokeRestart("muffleMessage")
+      })
+    }, error = function(e) {
+      log_msgs <<- c(log_msgs, sprintf("Error for %s: %s", exposure, e$message))
+      NULL
+    })
+    
+    if (is.null(m)) {
+      return(list(
+        Estimate = NA,
+        `Std. Error` = NA,
+        `t value` = NA,
+        `Pr(>Chisq)` = 1,
+        nobs = nrow(dat),
+        flag = "failed",
+        logs = log_msgs
+      ))
+    }
+    
     fl <- "relmatLmer"
     
     # compare to baseline model and fetch result
-    t <- suppressWarnings(anova(m0, m))
+    t <- suppressWarnings(suppressMessages(anova(m0, m)))
     a <- summary(m)
-    return(as.list(c(a$coefficients[2, ], t$`Pr(>Chisq)`[2], nobs = nobs(m), flag = fl)))
+    
+    result <- as.list(c(a$coefficients[2, ], t$`Pr(>Chisq)`[2], nobs = nobs(m), flag = fl))
+    result$logs <- log_msgs
+    return(result)
   }
 }
-
 
 #' Comprehensive biomarker performance analysis
 #'
@@ -416,6 +454,7 @@ get_linreg <- function(dat, m0 = NULL, outcome, exposure, covs = c(), mat, logis
 #' @importFrom pROC roc auc ci.auc coords
 #' @importFrom caret confusionMatrix
 #' @importFrom stats wilcox.test var median sd
+#' @importFrom rstatix cohens_d
 #'
 #' @export
 analyze_biomarker <- function(dat, outcome, exposure) {
@@ -425,6 +464,9 @@ analyze_biomarker <- function(dat, outcome, exposure) {
   }
   if (!requireNamespace("caret", quietly = TRUE)) {
     stop("Package 'caret' is required but not installed.")
+  }
+  if (!requireNamespace("rstatix", quietly = TRUE)) {
+    stop("Package 'rstatix' is required but not installed.")
   }
   
   # Get outcome levels and ensure they're character
@@ -488,18 +530,17 @@ analyze_biomarker <- function(dat, outcome, exposure) {
   # 5. Wilcoxon test
   wilcox_test <- wilcox.test(dat[[exposure]] ~ dat[[outcome]])
   
-  # Return comprehensive results
-  return(list(
+  # Return as data.table with one row
+  data.table(
+    biomarker = exposure,
     # ROC metrics
     AUC = as.numeric(auc_val),
     AUC_CI_lower = as.numeric(ci_auc[1]),
     AUC_CI_upper = as.numeric(ci_auc[3]),
-    
     # Optimal threshold
     optimal_threshold = threshold,
-    sensitivity = sensitivity,
-    specificity = specificity,
-    
+    sensitivity_optimal = sensitivity,
+    specificity_optimal = specificity,
     # Median threshold performance
     accuracy = as.numeric(cm$overall["Accuracy"]),
     accuracy_CI_lower = as.numeric(cm$overall["AccuracyLower"]),
@@ -508,80 +549,20 @@ analyze_biomarker <- function(dat, outcome, exposure) {
     NPV = as.numeric(cm$byClass["Neg Pred Value"]),
     sensitivity_median = as.numeric(cm$byClass["Sensitivity"]),
     specificity_median = as.numeric(cm$byClass["Specificity"]),
-    
     # Effect size
     cohens_d = cohens_d,
-    
     # Statistical test
     wilcox_p = wilcox_test$p.value,
-    
     # Group statistics
     Q1_mean = mean(q1_vals),
     Q1_sd = sd(q1_vals),
+    Q1_n = length(q1_vals),
     Q4_mean = mean(q4_vals),
     Q4_sd = sd(q4_vals),
-    
-    # Sample sizes
-    n_Q1 = length(q1_vals),
-    n_Q4 = length(q4_vals),
-    
-    # Confusion matrix
-    confusion_matrix = cm$table
-  ))
+    Q4_n = length(q4_vals)
+  )
 }
 
-
-#' Print biomarker analysis report
-#'
-#' Generates a formatted summary report of biomarker performance metrics
-#'
-#' @param biomarker_results List output from analyze_biomarker function
-#' @param exposure_name String specifying the name of the exposure/biomarker
-#'
-#' @return Prints formatted report to console
-#'
-#' @export
-print_biomarker_report <- function(biomarker_results, exposure_name) {
-  with(biomarker_results, {
-    # Create formatted message
-    msg <- sprintf("
-==== Biomarker Performance: %s ====
-ROC Analysis:
-  AUC: %.3f (95%% CI: %.3f - %.3f)
-  Optimal Threshold: %.3f (Sensitivity: %.1f%%, Specificity: %.1f%%)
-Classification at Median Threshold:
-  Accuracy: %.1f%% (95%% CI: %.1f%% - %.1f%%)
-  Sensitivity: %.1f%%, Specificity: %.1f%%, PPV: %.1f%%, NPV: %.1f%%
-Effect Size:
-  Cohen's d: %.2f
-Statistical Test:
-  Wilcoxon p-value: %.2e
-Group Characteristics:
-  Q1: %.2f ± %.2f (n=%d), Q4: %.2f ± %.2f (n=%d)",
-      exposure_name,
-      AUC, AUC_CI_lower, AUC_CI_upper,
-      optimal_threshold, sensitivity*100, specificity*100,
-      accuracy*100, accuracy_CI_lower*100, accuracy_CI_upper*100,
-      sensitivity_median*100, specificity_median*100, PPV*100, NPV*100,
-      cohens_d, 
-      wilcox_p,
-      Q1_mean, Q1_sd, n_Q1, Q4_mean, Q4_sd, n_Q4
-    )
-    
-    # Log the message (split by newlines to preserve formatting)
-    for(line in strsplit(msg, "\n")[[1]]) {
-      flog.info(line)
-    }
-    
-    # Log confusion matrix
-    flog.info("Confusion Matrix (at median threshold):")
-    cm <- confusion_matrix
-    flog.info("          Reference: %s", paste(colnames(cm), collapse = " "))
-    for(i in 1:nrow(cm)) {
-      flog.info("Prediction %-4s: %s", rownames(cm)[i], paste(sprintf("%3d", cm[i,]), collapse = " "))
-    }
-  })
-}
 
 
 # Main -------------------------
@@ -589,6 +570,9 @@ flog.info("=== Setting up for analysis ===")
 dat <- fread(input)
 names(dat) <- make.names(names(dat))
 names(prots) <- make.names(prots)
+# similar to other name shielding, but reversed for ease of use
+orig_outcome <- outcome
+outcome <- make.names(outcome)
 
 # add in single category columns with feature importance
 # PlateId was important, but P0028449, P0028565, P0028437, P0028430, P0028452, P0028448 were top30 in either glmcross-validated or plr estimates
@@ -687,30 +671,77 @@ results <- future_lapply(1:nrow(dt1), function(i) {
   )
 }, future.seed = TRUE, future.stdout = FALSE, future.conditions = character(0))
 
+# Extract all collected log messages and write them to the log file
+all_logs <- lapply(seq_along(results), function(i) {
+  if (!is.null(results[[i]]$logs) && length(results[[i]]$logs) > 0) {
+    # Add context about which iteration
+    sprintf("[Row %d: %s vs %s] %s", 
+            i, 
+            dt1$dx[i], 
+            dt1$ix[i], 
+            results[[i]]$logs)
+  }
+})
+
+# Flatten and write to log
+all_logs <- unlist(all_logs)
+if (length(all_logs) > 0) {
+  for (msg in all_logs) {
+    flog.info(msg)
+  }
+}
+
+# Remove logs from results to clean up the output
+results <- lapply(results, function(r) {
+  r$logs <- NULL
+  r
+})
+
 # Convert results to data.table and bind
 results_dt <- rbindlist(results)
 dt1[, (cols) := results_dt]
 
-# adding cohens_d for comparison
-dt1[flag != "failed", cohens_d := cohens_d(
-  data = dat, 
-  formula = as.formula(paste(ix, "~", dx)),
-  ref.group = factors[2]
-)$effsize, by = .I]
 
+if (binomial) {
+  # adding cohens_d for comparison
+  dt1[flag != "failed", cohens_d := cohens_d(
+    data = dat, 
+    formula = as.formula(paste(ix, "~", dx)),
+    ref.group = factors[2]
+  )$effsize, by = .I]
+
+  # Generate a summary report for quasi-complete separation subset
+  flog.info("=== Analyzing quasi-complete separation genes ===")
+  b_res <- rbindlist(lapply(dt1[flag == "separated", ix], function(k) {
+    analyze_biomarker(dat, outcome, exposure = k)
+  }))
+
+  # Remove Xs needed for formula
+  b_res$biomarker <- plyr::mapvalues(
+    x = b_res$biomarker, 
+    from = names(prots), 
+    to = prots,
+    warn_missing = FALSE
+  )
+  fwrite(b_res, 
+    file = file.path(output, paste(nameset, "separation_genes", "csv.gz", sep = "."))
+  )
+}
+
+# Summary
 # remove Xs needed for formula
 dt1$ix <- plyr::mapvalues(x = dt1$ix, from = names(prots), to = prots)
+dt1$dx <- plyr::mapvalues(x = dt1$dx, from = outcome, to = orig_outcome)
 # dt1[startsWith(ix, "X."), ix := gsub("^X.", ".", ix)]
 fwrite(dt1, 
   file = file.path(output, paste(nameset, "lme4qtl", "csv.gz", sep = "."))
 )
 
-# Generate a summary report for quasi-complete separation subset
-flog.info("=== Reports for quasi-complete separation genes ===")
-for (k in dt1[flag == "separated", ix]) {
-  x <- analyze_biomarker(dat, outcome, exposure = k)
-  print_biomarker_report(x, exposure_name = k)
-}
+flog.info("Summary: Analyzed %d biomarkers", nrow(dt1))
+invisible({
+  dt1[, .N, by = flag][order(-N)] |> 
+    apply(1, function(x) flog.info("  %s: %s", x["flag"], x["N"]))
+})
 
 # cleanup
 end <- toc(log = TRUE, quiet = TRUE)

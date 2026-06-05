@@ -2,11 +2,11 @@
 
 # filter genesets
 Rscript 01-gene_lists.R \
-  -i "Plasma_GFAP,Plasma_NFL,PlasmaPTau181,Plasma_pTau217,PlasmaAB140P,PlasmaAB142P,PlasmaABRatio,Plasma_pTau217_AB42Ratio"
+  -i "PlasmaGFAP,PlasmaNfL,PlasmaPTau181,PlasmapTau217,PlasmaAB140P,PlasmaAB142P,PlasmaABRatio,PlasmapTau217_AB42Ratio"
 
 # run padj gene set analysis
 bash 02-magma_command_padj.sh
-bash 03-magma_command_top10.sh
+bash 03-magma_command_top20.sh
 
 # run continuous property heritability enrichment
 bash 04-magma_command_cont_prop.sh

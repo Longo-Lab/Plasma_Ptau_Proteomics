@@ -183,17 +183,9 @@ lapply(seq(fm), function(i) {
   fwrite(fm[[i]], file=paste(nameset, types[i], "scaled.csv", sep="."))
 })
 
-
-
-
-# # # testing ------------------------------
-# # a = data.table(iris)[1:8]
-# # a[, Species := paste0(Species, .I)]
-# # a = transpose(a, keep.names="my_names", make.names="Species")
-# # b = row_scale(a, "my_names", names(a)[-1])
-# # a[, mean := rowMeans(.SD), .SDcols=c(names(a)[2:9])]
-# # b = row_scale(a, "my_names", names(a)[2:9])
-
+# # Specificity Generation --------------------------------------------------
+# fh <- fread("Sharma_etal.EWCE.human.lvl1.spec_matr.txt")
+# fh <- 
 
 
 

@@ -139,69 +139,25 @@ fwrite(dt1, file = "mypcair.PCs.csv")
 close(gds)
 
 # PC-Relate -------------------------------
-plan("multicore", workers = 8)
-options(future.globals.maxSize = 4 * 1e9)
-# prune to the relevant biomarker overlap
-gds <- GenotypeBlockIterator(GenotypeData(GdsGenotypeReader(gds_fn, allow.fork = TRUE)))
-sample.sel <- getScanID(gds)
+# pcrelate wigs out if you try parallel? https://github.com/UW-GAC/GENESIS/issues/101
 
-# for each biomarker make grm (second loop includes the APOE covariate)
-future_lapply(bios, function(i) {
-  # keep only first visit where plasma available
-  x <- a[!is.na(get(i))][order(DS1V)][, head(.SD, 1), by = "PIDN"]
-  # drop samples with incomplete cases
-  cols <- c("SampleID", i, covs)
-  x <- x[complete.cases(x[, ..cols])]
+# read in gds formatted data
+gds <- GenotypeBlockIterator(GenotypeData(GdsGenotypeReader(gds_fn)))
 
-  # intersection for variable of interest
-  both <- intersect(x[, PIDN], sample.sel)
+# run PC-Relate
+mypcrelate <- pcrelate(gds,
+  pcs = mypcair$vectors[, 1:8],
+  training.set = mypcair$unrels,
+  BPPARAM = BiocParallel::SerialParam()
+)
 
-  # run PC-Relate
-  mypcrelate <- pcrelate(gds, 
-    pcs = mypcair$vectors[, 1:8], 
-    training.set = intersect(mypcair$unrels, both),
-    BPPARAM = BiocParallel::SerialParam(),
-    sample.include = both
-  )
-
-  # write pcrelate RDS and GRM to file
-  saveRDS(mypcrelate, file = paste("mypcrelate", i, "rds", sep = "."))
-}, future.seed = TRUE)
+# write pcrelate RDS to file
+saveRDS(mypcrelate, file = "mypcrelate.rds")
 
 # # to read to Matrix format in lme4 ----------------------------------------
 # pcr <- readRDS(file = "mypcrelate.rds")
 # grm <- pcrelateToMatrix(pcr, thresh = 2^(-11/2), scaleKin = 2)
 
 
-
-
-# # # for each biomarker make grm (second loop includes the APOE covariate)
-# # lapply(c("all", "APOE"), function(j) {
-  # # future_lapply(bios, function(i) {
-    # # # keep only first visit where plasma available
-    # # x <- a[!is.na(get(i))][order(DS1V)][, head(.SD, 1), by = "PIDN"]
-    # # # drop samples with incomplete cases
-    # # if (j == "all") {
-      # # cols <- c("SampleID", i, covs[-7])
-    # # } else {
-      # # cols <- c("SampleID", i, covs)
-    # # }
-    # # x <- x[complete.cases(x[, ..cols])]
-
-    # # # intersection for variable of interest
-    # # both <- intersect(x[, PIDN], sample.sel)
-
-    # # # run PC-Relate
-    # # mypcrelate <- pcrelate(gds, 
-      # # pcs = mypcair$vectors[, 1:8], 
-      # # training.set = intersect(mypcair$unrels, both),
-      # # BPPARAM = BiocParallel::SerialParam(),
-      # # sample.include = both
-    # # )
-
-    # # # write pcrelate RDS and GRM to file
-    # # saveRDS(mypcrelate, file = paste("mypcrelate", i, j, "rds", sep = "."))
-  # # }, future.seed = TRUE)
-# # })
 
 

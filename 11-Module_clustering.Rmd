@@ -1,0 +1,1155 @@
+---
+title: "Module_clustering"
+author: "Robert R Butler III"
+date: "`r Sys.Date()`"
+output: 
+  html_notenook: 
+    fig_width: 8
+    fig_height: 6
+    code_folding: hide
+---
+
+# setup
+## packages & workspace
+```{r setup, message=FALSE}
+# # setup for linux/WSL2, needs conda python synapse client
+# syn.client <- reticulate::import('synapseclient')
+# syn.utils <- reticulate::import('synapseutils')
+# syn <- syn.client$Synapse()
+# syn$login()
+
+
+# setup for Windows, WSL2 with `conda activate synapse`
+library(Seurat)
+# synLogin()
+# 
+library(data.table)
+library(ggplot2)
+library(ggrepel)
+library(RColorBrewer)
+library(ComplexHeatmap)
+library(ggpubr)
+library(umap)
+library(emmeans)
+library(car)
+library(RNOmni)
+library(gt)
+library(MASS)
+library(GENESIS)
+library(lme4qtl)
+library(ordinal)
+
+# suppress messages
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+
+
+# WSL2
+# proj.dir <- file.path(
+#   "../"
+#   # "/mnt", "box", "Robert\ Butler\'s\ Externally\ Shareable\ Files", "treat-ad_comparative"
+# )
+# Windows
+proj.dir <- normalizePath(file.path(
+  "C:", "Users", "rrbutler", "Box", "Robert Butler's Files", "plasma_ptau_proteomics"
+), mustWork = TRUE)
+# setwd(proj.dir)
+knitr::opts_knit$set(root.dir = proj.dir)
+
+# global vars
+data_path <- "module_scores"
+nameset <- "dataProt_SS-205063.STRING"
+score <- "STRING.INT.WSS"
+bios <- c(
+  "PlasmaAB142P", "PlasmaAB140P", "PlasmaABRatio", "PlasmaGFAP", 
+  "PlasmaNfL", "PlasmaPTau181", "PlasmapTau217", "PlasmapTau217_AB42Ratio"
+)
+
+
+```
+
+## Define the functions 
+```{r function}
+#' function to make a barplot with swarm points given a fitted linear model
+#' 
+#' @params dt data.table with data
+#' @params emm data.table with estimated marginal means from emmeans 
+#' @params x string, x column data tables specifying group
+#' @params y string, y column for dt only, emm depends on fixed emmeans values  
+#' @params col string, grouping column
+#' @params titl string, plot title
+#' @params pal vector, list of color palette values for scale_color_manual
+#' 
+#' @return ggplot object
+bar_swarm <- function(dt, emm, x, y, col, titl, 
+                      pal = RColorBrewer::brewer.pal("Dark2", n = 7)) {
+  # Convert emmeans to data.frame if needed
+  if("emmGrid" %in% class(emm)) {
+    emm_df <- as.data.frame(emm)
+  } else {
+    emm_df <- emm
+  }
+
+  p <- ggplot(dt, aes(x = .data[[x]], y = .data[[y]], color = .data[[col]], fill = .data[[col]])) +
+   geom_col(
+      data = emm_df,
+      aes(x = .data[[x]], y = emmean, fill = .data[[x]]),
+      width = 0.6
+    ) +
+    # Error bars using emmean ± SE
+    geom_errorbar(
+      data = emm_df,
+      aes(x = .data[[x]], ymin = emmean - SE, ymax = emmean + SE, color = .data[[x]]),
+      width = 0.3,
+      size = 0.8,
+      inherit.aes = FALSE,
+      color = "black"
+    ) +
+    geom_jitter(
+      data = dt,
+      aes(x = .data[[x]], y = .data[[y]]),
+      position = position_jitter(width = 0.2, seed = 123), 
+      size = 2,
+      color = "black"
+    ) +
+    theme_classic() +
+    ggtitle(titl) +
+    scale_color_manual(values = pal) +
+    scale_fill_manual(values = pal) +
+    theme(
+      axis.text.x = element_text(
+        angle = 45, 
+        hjust = 1, 
+        vjust = 1, 
+        family = 'Arial',
+        face = 'bold',
+        size = 12
+      ),
+      axis.text.y = element_text(
+        family = 'Arial',
+        face = 'bold',
+        size = 8
+      ),
+      axis.title.y = element_text(
+        face = 'bold', 
+        family = 'Arial', 
+        size = 12
+      ), 
+      plot.title = element_text(
+        hjust = 0.5, 
+        face = 'bold', 
+        family = 'Arial', 
+        size = 12
+      ), 
+      plot.subtitle = element_text(
+        hjust = 0.5, 
+        face = 'bold', 
+        family = 'Arial', 
+        size = 8
+      ),
+      legend.position = 'none',
+      axis.title.x = element_blank()
+    )
+  # # Add conditional ordering
+  # if(x == "group") {
+  #   p <- p + scale_x_discrete(
+  #     limits = c('CM', 'Wt', 'Wt_C31', 'PS19', 'PS19_C31'),
+  #     labels = function(x) gsub("_", " + ", x)
+  #   )
+  # }
+  return(p)
+}
+
+
+#' Create a Compact Summary String of a Linear Model
+#'
+#' This function extracts key statistics from a linear model summary and formats 
+#' them into a compact string suitable for plot subtitles or inline reporting.
+#' The string includes R-squared, F-statistic with degrees of freedom, and p-value.
+#'
+#' @param model An object of class 'lm' (linear model)
+#' @param digits Integer indicating the number of decimal places for R-squared and F-statistic (default: 3)
+#' @param p_digits Integer indicating the number of decimal places for p-value (default: 3)
+#' @param include_adj_r logical; whether to include adjusted R-squared (default: FALSE)
+#'
+#' @return A character string containing formatted model statistics
+#'
+#' @examples
+#' # Create a simple linear model
+#' model <- lm(mpg ~ wt + hp, data = mtcars)
+#' 
+#' # Get compact summary string
+#' model_subtitle(model)
+#' 
+#' # Use in a ggplot
+#' library(ggplot2)
+#' ggplot(mtcars, aes(wt, mpg)) +
+#'   geom_point() +
+#'   geom_smooth(method = "lm") +
+#'   labs(subtitle = model_subtitle(model, include_adj_r = TRUE))
+#'
+#' @export
+model_subtitle <- function(model, digits = 3, p_digits = 3, include_adj_r = FALSE) {
+  # Check input
+  if (!inherits(model, "lm")) {
+    stop("Input must be a linear model object of class 'lm'")
+  }
+
+  # Extract model summary
+  s <- summary(model)
+
+  # Extract components
+  r_squared <- round(s$r.squared, digits)
+  f_stat <- round(s$fstatistic["value"], digits)
+  df1 <- s$fstatistic["numdf"]
+  df2 <- s$fstatistic["dendf"]
+  p_value <- pf(s$fstatistic["value"], df1, df2, lower.tail = FALSE)
+
+  # Format p-value
+  if (p_value < 2e-16) {
+    p_str <- "p < 2e-16"
+  } else if (p_value < 10^(-p_digits)) {
+    p_str <- paste("p =", formatC(p_value, format = "e", digits = 2))
+  } else {
+    p_str <- paste("p =", round(p_value, p_digits))
+  }
+
+  # Build the result string
+  if (include_adj_r) {
+    adj_r_squared <- round(s$adj.r.squared, digits)
+    result <- sprintf("R² = %s (adj. R² = %s), F(%d, %d) = %s, %s", 
+                     r_squared, adj_r_squared, df1, df2, f_stat, p_str)
+  } else {
+    result <- sprintf("R² = %s, F(%d, %d) = %s, %s", 
+                     r_squared, df1, df2, f_stat, p_str)
+  }
+
+  return(result)
+}
+
+
+#' Generalized linear model based on a flexible formula
+#'
+#' @param dat Data.table with the original data
+#' @param m0 lmerMod baseline model with without the exposure element
+#' @param outcome String specifying the column in dat containing the outcome variable
+#' @param exposure String specifying the column in dat containing the exposure variable
+#' @param covs Vector of column names containing covariates to be included in the formula
+#' @param mat dsCMatrix a Generalized relatedness matrix
+#'
+#' @returns A list: 'Estimate' (beta), 'Std. Error' (se), 't value' (test statistic), 'Pr(>Chisq)' (p-value), 'nobs' (number of observations)
+get_linreg <- function(dat, outcome, exposure, covs = c(), mat) {
+  m <- relmatLmer( # remember in the formula, exposure must come first after ~
+    as.formula(paste(outcome, "~", paste(c(exposure, covs, "(1|PIDN)"), collapse = " + "))),
+    data = dat,
+    relmat = list(PIDN = mat)
+  )
+  t <- suppressWarnings(anova(m0, m))
+  a <- summary(m)
+  return(as.list(c(a$coefficients[2, ], t$`Pr(>Chisq)`[2], nobs = nobs(m))))
+}
+
+#' Recodes dummy categorical variables and can subset by vector of categories
+#'
+#' @param dat Data.table with the original data
+#' @param dcol String representing the column to be split
+#' @param keep Vector of strings that are the categories within dcol to extract. default is all c()
+#'
+#' @returns modified data.table with new dummy variable columns named "dcol.category" after original column
+recode_dummies <- function(dat, dcol, keep = c()) {
+  dt <- dat
+  # check input
+  if (length(keep) == 0) {
+    inds <- unique(dt[[dcol]])
+  } else if (length(keep) > 0 & all(keep %in% unique(dt[[dcol]]))) {
+    inds <- unique(dt[[dcol]])[unique(dt[[dcol]]) %in% keep]
+  } else {
+    stop("Keep must be a vector of names in the original column")
+  }
+  # split out dummies
+  dt[, c(paste(dcol, inds, sep = ".")) := lapply(inds, function(x) ifelse(get(dcol) == x, 1, 0))]
+  # reorder behind original variable
+  v <- grep(paste0("^", dcol, "$"), names(dt))[1]
+  inds <- paste(dcol, inds, sep = ".")
+  setcolorder(dt, c(names(dt)[1:v], inds, names(dt)[(v + 1):(ncol(dt) - length(inds))]))
+  return(dt)
+}
+
+
+```
+
+## Load data
+```{r make_seurat, include=FALSE}
+# load overall base file
+result <- fread("dataProt_SS-205063.merged.QC.csv")
+a <- result[, 1:27]
+a[, Date.of.draw := NULL]
+a[Diagnosis_group == "MCI-AD", Diagnosis_group := "MCI"]
+a[, last_diagnosis := Diagnosis_group[which.max(DS1V)], by = PIDN]
+
+# Map in PCs assumes your primary data table exists 
+x <- fread("genomic/mypcair.PCs.csv", colClasses = c(PIDN = "character"))
+a <- merge(a, x, by = "PIDN")
+
+# setup for eigengenes vs NES scores
+if (score %like% "eigengenes") {
+  tail <- "csv" 
+  score_val <- "Eigengene"
+  scores <- fread("module_scores/STRING_merged_scaled_scores.csv")
+  scores <- unique(scores[, .(Biomarker, cluster, term)])
+  scores[, name := paste0("ME", Biomarker, "-", cluster)]
+  scor <- scores[, term]
+  names(scor) <- scores[, name]
+} else if (score %like% "WSS") {
+  tail <- "csv" 
+  score_val <- "Weighted Sum of Scores"
+  scores <- fread("module_scores/STRING_merged_scaled_scores.csv")
+  scores <- unique(scores[, .(Biomarker, cluster, term)])
+  scores[, name := paste0(Biomarker, ".", cluster)]
+  scor <- scores[, term]
+  names(scor) <- scores[, name]
+} else {
+  tail <- "normalized_scores.csv"
+  score_val <- "NES"
+  scor <- NULL
+}
+
+# Map in PCs assumes your primary data table exists 
+x <- fread(
+  file.path(data_path, 
+    paste("dataProt_SS-205063", score, tail, sep = ".")
+  ), 
+  colClasses = c(SampleID = "character")
+)
+a <- merge(a, x, by = "SampleID")
+# checking that eigengenes succeeded
+input <- names(scor)[names(scor) %in% names(a)]
+
+# drop outlier samples
+drop = a[abs(ConnectivityZscore) > 10, SampleID]
+a = a[!SampleID %in% drop]
+
+# only APOE
+a <- a[APOE != ""]
+
+# Add in phenotypes for individuals -----------------
+x <- data.table(
+  readxl::read_xlsx(
+    "../ADRC traits/Z1XADRCNACC_DATA_LABELS_2021_10_18_matchMetadata_allSamples.xlsx",
+    sheet = "Z1XADRCNACC_DATA_LABELS_2021_10"
+  )
+)
+
+a <- merge(a, 
+  x[, .(Sample_Id, CDRSUM, MOCATOTS)], 
+  by.x = "SampleID", 
+  by.y = "Sample_Id", 
+  all.x = TRUE, 
+  sort = FALSE
+)
+
+# get final Diagnosis
+a[, last_diagnosis := Diagnosis_group[which.max(Visit)], by = PIDN]
+
+# clean cog scores
+a[MOCATOTS > 30, MOCATOTS := NA]
+
+# convert MoCA
+conv <- fread("Haji_2025.CDRSUM-2-MoCA.csv")
+setkey(conv, `CDR-SB`)
+a[, MoCA := fifelse(
+  Diagnosis_group == "AD" & !is.na(Diagnosis_group),
+  conv$AD.MoCA[match(CDRSUM, conv$`CDR-SB`)],
+  conv$Full.MoCA[match(CDRSUM, conv$`CDR-SB`)]
+)]
+a[!is.na(MOCATOTS), MoCA := MOCATOTS]
+
+# get final cog score
+a[, last_MoCA := MoCA[which.max(Visit)], by = PIDN]
+a[, last_CDRSUM := CDRSUM[which.max(Visit)], by = PIDN]
+
+# Calculate MoCA velocity (slope per 365 days) for participants with 2+ visits
+a[!is.na(MoCA), MoCA_velocity := {
+    if (.N >= 2) {
+      # Fit linear model: MoCA ~ DS1V
+      fit <- lm(MoCA ~ DS1V)
+      # Extract slope and convert to per-year rate
+      coef(fit)[2] * 365
+    } else {
+      NA_real_
+    }
+  }, 
+  by = PIDN
+]
+
+# Floor cognitively normal improvers and remove low baseline improvers
+a[, MoCA_v_floored := {
+  baseline_score = MoCA[which.min(DS1V)]
+  fcase(
+    MoCA_velocity > 1e-10 & baseline_score < 17, NA_real_,  # Exclude low baseline improvers
+    MoCA_velocity > 1e-10, 0,                                # Floor other improvers
+    default = MoCA_velocity                                  # Keep decliners/stable
+  )
+}, by = PIDN]
+
+
+# Setup for baseline visit only analysis ---------------------------
+# get the first visit for each score, with Diagnosis_group, Age, Gender, APOE, HybControlNormScale
+b <- lapply(input, function(i) {
+  x <- a[!is.na(get(i))][, value := get(i)]
+  x <- x[, .(PIDN, SampleID, DS1V, value, Diagnosis_group, Age, Gender, APOE, HybControlNormScale, CDRSUM, MOCATOTS)]
+  # keep only first visit where plasma available
+  x <- x[order(DS1V)][, head(.SD, 1), by = "PIDN"]
+})
+setattr(b, 'names', input)
+b <- rbindlist(b, idcol = 'Score')
+# b[, .N, by = Score]
+b[, Score := factor(Score, levels = sort(unique(Score)))]
+setnames(b, "value", score_val)
+
+# for this plot, reclassify MCI-AD as MCI
+b[, Diagnosis_group := gsub("MCI-AD", "MCI", Diagnosis_group)]
+b$Diagnosis_group <- factor(b$Diagnosis_group, levels = c("HC", "MCI", "AD"))
+a[, Diagnosis_group := gsub("MCI-AD", "MCI", Diagnosis_group)]
+a$Diagnosis_group <- factor(a$Diagnosis_group, levels = c("HC", "MCI", "AD"))
+
+# define the baselines
+samp <- unique(b$SampleID)
+
+a_base <- a[SampleID %in% samp]
+# any(duplicated(a$PIDN))
+# any(duplicated(a$SampleID))
+a_after <- a[!SampleID %in% samp]
+
+fwrite(a_base[, .(PIDN, SampleID)], file = file.path("dataProt_SS-205063.baseline_pidn.csv"))
+
+```
+
+## Save clinical data
+```{r}
+a_base <- merge(a_base, 
+  x[, .(Sample_Id, CBTIA, TBI, DIABETES, CVCHF, CVHATT, CVAFIB, CVANGINA, HYPERCHO, HYPERTEN, DEP2YRS, ANXIETY)], 
+  by.x = "SampleID", 
+  by.y = "Sample_Id", 
+  all.x = TRUE, 
+  sort = FALSE
+)
+  
+a_base[!is.na(DIABETES), DIABETES := ifelse(DIABETES == 1 | DIABETES == 2, 1, 0)]
+cols <- c("CBTIA", "TBI", "CVCHF", "CVHATT", "CVAFIB", "CVANGINA", "HYPERCHO", "HYPERTEN", "DEP2YRS", "ANXIETY")
+a_base[, (cols) := lapply(.SD, function(i) ifelse(i == 2, 0, i)), .SDcols = cols]
+
+# check values
+summary_long <- melt(a_base[, .SD, .SDcols = c(cols, "DIABETES")], measure.vars = c(cols, "DIABETES"))[
+  , .(count = .N), by = .(variable, value)
+]
+dcast(summary_long, variable ~ value, value.var = "count", fill = 0)
+
+# simplified AD
+a_base[, Diagnosis_bin := fcase(
+  Diagnosis_group == "HC", 0L,
+  Diagnosis_group == "AD", 1L,
+  Diagnosis_group == "MCI", NA_integer_
+)]
+a_base[, last_diag_bin := fcase(
+  last_diagnosis == "HC", 0L,
+  last_diagnosis == "AD", 1L,
+  last_diagnosis == "MCI", NA_integer_
+)]
+
+set.seed(123)
+a_base[, RAND := sample(c(0L, 1L), size = .N, replace = TRUE)]
+
+fwrite(a_base, file = file.path("dataProt_SS-205063.baseline_clin.csv"))
+
+```
+
+# Check MoCA velocity outcomes
+Some are positive potentially representing practice effect
+```{r moca_veloc}
+library(ggplot2)
+library(patchwork)
+
+# Prepare data for visualization
+fig_data <- a[!is.na(MoCA_velocity), .(
+  first_MoCA = MoCA[which.min(DS1V)],
+  last_MoCA = MoCA[which.max(DS1V)],
+  change = MoCA[which.max(DS1V)] - MoCA[which.min(DS1V)],
+  n_visits = .N,
+  time_span_years = (max(DS1V) - min(DS1V)) / 365,
+  velocity = MoCA_velocity,
+  velocity_cleaned = MoCA_v_floored
+), by = PIDN]
+
+# Add trajectory classification
+velocity_tolerance <- 1e-10
+fig_data[, trajectory := fcase(
+  velocity > velocity_tolerance & first_MoCA < 17, "Improver (low baseline, excluded)",
+  velocity > velocity_tolerance & first_MoCA >= 17, "Improver (practice effect, floored)",
+  abs(velocity) <= velocity_tolerance, "Stable",
+  velocity < -velocity_tolerance, "Decliner"
+)]
+
+# Set factor levels for ordering
+fig_data[, trajectory := factor(trajectory, levels = c(
+  "Improver (low baseline, excluded)",
+  "Improver (practice effect, floored)",
+  "Stable",
+  "Decliner"
+))]
+
+# Color scheme
+traj_colors <- c(
+  "Improver (low baseline, excluded)" = "#D55E00",
+  "Improver (practice effect, floored)" = "#F0E442",
+  "Stable" = "#999999",
+  "Decliner" = "#0072B2"
+)
+
+# Simpler 3-panel version
+p1_simple <- ggplot(fig_data, aes(x = first_MoCA, y = last_MoCA, color = trajectory)) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray50") +
+  geom_point(alpha = 0.7, size = 3) +
+  scale_color_manual(values = traj_colors, name = "") +
+  scale_x_continuous(breaks = seq(0, 30, 5), limits = c(5, 30)) +
+  scale_y_continuous(breaks = seq(0, 30, 5), limits = c(5, 30)) +
+  labs(
+    x = "Baseline MoCA Score",
+    y = "Final MoCA Score",
+    title = "A"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(face = "bold", size = 16)
+  )
+
+p2_simple <- ggplot(fig_data, aes(x = velocity , fill = trajectory)) +
+  geom_histogram(binwidth = 0.5, color = "white", alpha = 0.8) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black", linewidth = 0.8) +
+  scale_fill_manual(values = traj_colors) +
+  scale_x_continuous(breaks = seq(-10, 10, 2)) +
+  labs(
+    x = "MoCA Velocity (points/year, raw)",
+    y = "Count",
+    title = "B"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold", size = 16)
+  )
+
+fig_data_cleaned <- fig_data[!is.na(velocity_cleaned)]
+p3_simple <- ggplot(fig_data_cleaned, aes(x = velocity_cleaned , fill = trajectory)) +
+  geom_histogram(binwidth = 0.5, color = "white", alpha = 0.8) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black", linewidth = 0.8) +
+  scale_fill_manual(values = traj_colors) +
+  scale_x_continuous(breaks = seq(-10, 10, 2)) +
+  labs(
+    x = "MoCA Velocity (points/year, cleaned)",
+    y = "Count",
+    title = "C"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold", size = 16)
+  )
+
+simple_plot <- p1_simple / (p2_simple | p3_simple) +
+  plot_layout(heights = c(1, 0.8), guides = "collect") +
+  plot_annotation(theme = theme(legend.position = "bottom"))
+
+ggsave(
+  filename = file.path("manuscript", "Figure_4", 
+    "Supplementary_Figure_MoCA_Trajectories_Simple.pdf"
+  ), 
+  plot = simple_plot, 
+  width = 8, 
+  height = 7
+)
+
+
+
+```
+
+
+
+# Seurat Object
+Use seurat for convenient access to PCs, UMAPs, plotting on eigengenes in the `scale.data` layer.
+```{r}
+# Use your scaled data as the count matrix (Seurat requires some data in counts slot)
+cols1 <- c("SampleID", input) 
+cols2 <- names(a_base)[!names(a_base) %in% input] 
+exp <- as.matrix(transpose(a_base[, ..cols1], keep.names = "GENE", make.names = "SampleID"), rownames = "GENE")
+sc <- CreateSeuratObject(
+  counts = exp, 
+  project = "dataProt_SS-205063",
+  meta.data = data.frame(a_base[, ..cols2], row.names = "SampleID")
+)
+
+# Replace the scale.data slot with your actual scaled data
+LayerData(sc, assay = "RNA", layer = "scale.data") <- exp
+
+VariableFeatures(sc) <- rownames(sc)
+names <- c(
+  "Merged.M1", 
+  "Merged.M11", 
+  "Merged.M7", 
+  "Merged.M9", 
+  "Merged.M2", 
+  "PlasmaPTau181.M8", 
+  "Merged.M6", 
+  "PlasmaAB140P.M17", 
+  "Merged.M12", 
+  "Merged.M4", 
+  "Merged.M5", 
+  "PlasmaAB140P.M20", 
+  "Merged.M8", 
+  "PlasmaPTau181.M35", 
+  "Merged.M3", 
+  "Merged.M26", 
+  "Merged.M13", 
+  "Merged.M10", 
+  "PlasmaPTau181.M18", 
+  "Merged.M14", 
+  "Merged.M19", 
+  "Merged.M16", 
+  "PlasmaPTau181.M26", 
+  "Merged.M29", 
+  "Merged.M24", 
+  "PlasmaPTau181.M13", 
+  "PlasmaPTau181.M47", 
+  "Merged.M25", 
+  "PlasmaAB140P.M35", 
+  "PlasmaPTau181.M46", 
+  "Merged.M20", 
+  "Merged.M32", 
+  "Merged.M22", 
+  "Merged.M15", 
+  "Merged.M21", 
+  "Merged.M18", 
+  "PlasmaPTau181.M5", 
+  "PlasmaAB140P.M15", 
+  "Merged.M27", 
+  "PlasmaAB140P.M40", 
+  "Merged.M17", 
+  "PlasmaNfL.M3", 
+  "PlasmaAB140P.M18", 
+  "PlasmaPTau181.M30", 
+  "PlasmaGFAP.M12"
+)
+# VariableFeatures(sc) <- names
+
+```
+
+## clustering analysis setup
+Check the number of PCs. Little benefit beyond 6 for this few genes
+```{r cluster_elbow}
+sc |>
+  RunPCA(npcs = 20) |>
+  ElbowPlot()
+
+
+```
+## Clustering
+Checking the clusters. This could also make use of Biodomain and Celltype eigengenes, although that may violate some assumptions of independence between the eigengenes.
+```{r}
+pcs <- 7
+sc |>
+  RunPCA(npcs = pcs) |>
+  FindNeighbors(dims = 1:pcs) |>
+  FindClusters(resolution = 1) |>
+  RunUMAP(dims = 1:pcs) -> sc
+
+# check clusters
+DimPlot(sc)
+
+# look at eigengene composition
+markers <- data.table(FindAllMarkers(sc, test.use = "t", slot = "scale.data"))
+setorder(markers, cluster, p_val_adj, p_val)
+DoHeatmap(sc) +
+  scale_fill_gradientn(colors = colorRampPalette(brewer.pal(11, "RdBu"))(100))
+
+```
+
+## Heatmaps
+```{r heat}
+all(rownames(sc@meta.data) == colnames(exp))
+
+# Get labels
+labs <- scor[match(rownames(exp), names(scor))] 
+
+# prep plot
+set.seed(3)
+hm <- Heatmap(
+  exp,
+  name = "Score clustering across cohort",
+  cluster_columns = TRUE,
+  column_split = sc@meta.data$seurat_clusters,
+  column_dend_height = unit(2, "cm"), 
+  cluster_rows = TRUE,
+  show_row_dend = FALSE,
+  show_column_names = FALSE,
+  # row_split = breaks,
+  row_labels = labs,
+  top_annotation = HeatmapAnnotation(
+    df = sc@meta.data[, c("Subarray", "PlateId", "Gender", "APOE", "Age", "CDRSUM", "MOCATOTS", "Diagnosis_group")],
+    col = list(
+      Diagnosis_group = setNames(get_palette("BuPu", 4)[-1], levels(b$Diagnosis_group))
+    )# ,
+    # height = unit(1, "cm")
+  ),
+  # Set legend columns parameter
+  heatmap_legend_param = list(
+    title = "Weighted Sum of Scores" #, 
+    # legend_width = unit(4, "cm"),
+    # nrow = 1  # Number of rows in the legend (creates columns)
+  )
+)
+# Draw the heatmap and return as a grid object
+draw(hm)
+
+```
+So a seurat based approach using PCs produces ok clusters, but doesn't capture the obvious groupings...
+```{r test_diff}
+# get adjusted values
+int = FALSE
+dat_col <- 'MoCA_v_floored'
+plot_col <- 'MoCA_v_floored (batch adj)'
+dt <- data.table(sc@meta.data, keep.rownames = "SampleID")
+
+# for diagnosis group
+dt$Diagnosis_group <- factor(dt$Diagnosis_group, 
+  levels = c("HC", "MCI", "AD"), 
+  ordered = TRUE
+)
+
+# INT transform for cog tests
+if (int){
+  dt[!is.na(get(dat_col)), c(dat_col) := RankNorm(get(dat_col))]
+}
+
+# # first checked glms for cog tests
+# # diagnosis glm drop MCI
+# dt <- dt[Diagnosis_group != "MCI"]
+# dt$Diagnosis_group <- droplevels(dt$Diagnosis_group)
+# glm model
+glm <- glm(
+  data = dt,
+  formula = MoCA_v_floored ~ Age + Gender + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + seurat_clusters
+)
+summary(glm)
+
+# # then check ordinal diagnoses
+# plo <- clm(
+#   data = dt,
+#   formula = Diagnosis_group ~ Age + Gender + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + seurat_clusters
+# )
+# summary(plo)
+# nominal_test(plo)
+
+
+# Check diagnostics of the model
+par(mfrow = c(2, 2))
+plot(glm)
+par(mfrow = c(1, 1))
+
+
+# Shapiro test for normality of residuals
+shapiro.test(residuals(glm))
+
+# Levene test for homogeneity of variances
+leveneTest(as.formula(MoCA_v_floored ~ seurat_clusters), data = dt)
+
+# Get estimated marginal means
+emm <- emmeans(glm, "seurat_clusters")
+print(emm)
+
+# Pairwise comparisons against PS19 reference
+comparisons <- contrast(emm, method = "trt.vs.ctrl", ref = "seurat_clusters2", adjust = "bonferroni")
+print(comparisons)
+
+# adjusted values
+if (int) {
+# Combine EMMs with individual sample residuals INT
+  dt[!is.na(get(dat_col)), c(plot_col) := 
+       summary(emm)$emmean[match(seurat_clusters, summary(emm)$seurat_clusters)] + residuals(glm)
+  ]
+  # dt[get(plot_col) < 0, c(plot_col)] <- 0
+} else {
+  dt[!is.na(get(dat_col)), c(plot_col) := 
+       summary(emm)$emmean[match(seurat_clusters, summary(emm)$seurat_clusters)] + residuals(glm)
+  ]
+  # dt[get(plot_col) < 0, c(plot_col)] <- 0
+}
+
+
+# table for model summary
+# model_dt <- data.table(summary(glm)$coefficients, keep.rownames = "Coefficient")
+# p7 <- gt(model_dt, rowname_col = "Coefficient") |>
+#   tab_header(
+#     title = md("**Linear model of treatment effect**"),
+#     subtitle = deparse(formula(glm))
+#   ) |>
+#   tab_footnote(model_subtitle(glm, include_adj_r = TRUE)) |>
+#   tab_options(
+#     table.font.size = px(12),
+#     column_labels.font.size = px(12),
+#     heading.title.font.size = px(14)
+#   )
+
+p1 <- bar_swarm(dt, 
+  emm = emm,              
+  x = "seurat_clusters", 
+  y = dat_col, 
+  col = "seurat_clusters",
+  titl = if (int) paste("INT", dat_col) else dat_col,
+  pal = RColorBrewer::brewer.pal("Set1", n = 9)
+) + ylab(if (int) paste("INT", dat_col) else dat_col)
+p2 <- bar_swarm(dt, 
+  emm = emm,              
+  x = "seurat_clusters", 
+  y = plot_col, 
+  col = "seurat_clusters",
+  titl = if (int) paste("INT", plot_col) else plot_col,
+  pal = RColorBrewer::brewer.pal("Set1", n = 9)
+) + ylab(plot_col)
+
+p1 + p2
+
+
+```
+
+```{r trends}
+library(dplyr)
+library(tidyr)
+
+plot_data <- a_base %>%
+  mutate(
+    id = row_number(),
+    change = case_when(
+      is.na(last_MoCA) | is.na(MoCA) ~ "Missing",
+      MoCA > last_MoCA ~ "Increasing",
+      MoCA < last_MoCA ~ "Decreasing",
+      TRUE ~ "No Change"
+    )
+  ) %>%
+  pivot_longer(cols = c(last_MoCA, MoCA),
+               names_to = "timepoint",
+               values_to = "score") %>%
+  mutate(timepoint = factor(timepoint, levels = c("last_MoCA", "MoCA")))
+
+# Create the plot
+ggplot(plot_data, aes(x = timepoint, y = score, group = id)) +
+  geom_line(aes(color = change), linewidth = 1.2, alpha = 0.7) +
+  geom_point(size = 2.5) +
+  scale_color_manual(values = c("Increasing" = "#2E7D32",
+                                "Decreasing" = "#C62828",
+                                "No Change" = "#757575",
+                                "Missing" = "#FFA726")) +
+  scale_x_discrete(labels = c("last_MoCA" = "Last MoCA", "MoCA" = "Current MoCA")) +
+  labs(x = "", 
+       y = "MoCA Score",
+       color = "Change",
+       title = "MoCA Score Changes") +
+  theme_minimal() +
+  theme(legend.position = "right",
+        panel.grid.major.x = element_blank())
+
+
+
+```
+
+
+
+```{r correlation_to_biomarkers}
+library(data.table)
+library(corrplot)
+library(Hmisc)
+
+# Calculate correlation with p-values
+cor_result <- rcorr(as.matrix(a_base[, ..names]), 
+                    as.matrix(a_base[, ..bios]))
+
+# Extract correlation between eigengenes (rows) and biomarkers (columns)
+cor_matrix <- cor_result$r[bios, names]
+p_matrix <- cor_result$P[bios, names]
+
+# Plot - show all squares but only label significant ones
+corrplot(cor_matrix,  # Use the masked matrix for coefficients
+         method = "square",
+         type = "full",
+         tl.col = "black",
+         tl.srt = 45,
+         addCoef.col = "black",
+         number.cex = 0.6,
+         p.mat = p_matrix,
+         insig = 'blank',
+         mar = c(0, 0, 1, 1)
+)
+
+# Add title with precise control
+title("Eigengenes vs Biomarkers (coefficients shown for p < 0.05)", 
+      line = 0.1,  # Distance from plot (adjust this)
+      cex.main = 1)  # Title size
+
+
+```
+
+
+
+```{r plotPredvalidation}
+library(ggrepel)
+
+glm_cv <- fread("prediction_models/STRING_WSS/joinet/INT/joinet_model_metrics_c_index_STRING_WSS_INT.csv")
+# glm_cv[, outcome := gsub("\\.", "\\-", outcome)]
+glm_cv <- merge(glm_cv, scores, by.x = 'outcome', by.y = 'name')
+glm_cv[, c("C.index", "C.SE") := lapply(tstrsplit(C_index, " ± "), as.numeric)]
+
+# pres_stat <- fread("")
+
+# Clean and prepare data
+plot_data <- glm_cv[
+  !outcome %like% "grey" 
+  & variant == "Biomarkers_Age_Sex"
+  & outcome %in% names
+]
+
+
+# Check for any remaining issues
+cat("Data rows:", nrow(plot_data), "\n")
+cat("r2_oof range:", range(plot_data$R2), "\n")
+cat("aoc_rroc range:", range(plot_data$C.index), "\n")
+
+
+# Create the plot with better handling
+final_plot <- ggplot(plot_data, aes(x = R2, y = C.index, color = Biomarker, size = )) +
+  geom_point(size = 3, alpha = 0.7) +
+  geom_text_repel(
+    aes(label = term),
+    size = 2.5,
+    max.overlaps = 25,
+    box.padding = 0.3,
+    point.padding = 0.3,
+    segment.color = "grey50",
+    segment.size = 0.3
+  ) +
+  scale_color_brewer(palette = "Dark2") +
+  labs(
+    title = "Module score prediction performance on hold out set",
+    subtitle = "Joinet multivariate elastic net, n = 259",
+    x = "Model fit (R²)",
+    y = "Concordance-index",
+    color = "Biomarker Type"
+  ) +
+  theme_classic() +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 8),
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+ggsave(final_plot, 
+  filename = file.path("manuscript", "Figure_6", 
+    paste(nameset, "prediction_performance.pdf", sep = ".")
+  ),
+  width = 7,
+  height = 5
+)
+print(final_plot)
+
+```
+
+
+```{r validation module biomarkers}
+# read in genes
+genes <- fread("module_scores/STRING_merged_scaled_scores.csv")
+# read in and generate the relatedness matrix
+pcr <- readRDS("genomic/mypcrelate.rds")
+grm <- pcrelateToMatrix(pcr, thresh = 2^(-11/2), scaleKin = 2)
+
+# pick example biomarker
+mod <- make.names(names)[1]
+covs <- c("Age", "Gender", "PC1", "PC2", "PC3", "PC4", "PC5", "PC6", "PC7", "PC8")
+outcome <- names(a_base)[names(a_base) %like% "lasma"][1:8]
+
+
+prot <- a_base[, .SD, .SDcols = c("SampleID", outcome)]
+prot <- prot[complete.cases(prot),] 
+prot[, (outcome) := lapply(.SD, RankNorm), .SDcols=outcome]
+prot <- t(as.matrix(prot, rownames = "SampleID"))
+
+pheno <- a_base[complete.cases(a_base[, ..outcome]),] 
+pheno <- data.frame(pheno[, .SD, .SDcols = c("SampleID", "MEMerged-M11", covs)], row.names = "SampleID")
+
+# defining models with static set of 6 SVs
+m <- model.matrix( # this will include all covs and the outcome
+  as.formula(paste("~", paste(names(pheno), collapse=" + "))), 
+  data = pheno
+) 
+m0 <- model.matrix( # this will drop the outcome
+  as.formula(
+    paste("~", paste(names(pheno)[names(pheno) != mod], collapse = " + "))
+  ),
+  data = pheno
+)
+# m0 <- model.matrix(~ 1, data = pheno)
+svobj <- sva(prot, m, m0)
+
+
+
+
+
+
+
+# get upper/lower quartile groups
+a_after[, quartile := cut(get(mod), 
+                     breaks = quantile(get(mod), probs = 0:4/4),
+                     labels = c("Q1", "Q2", "Q3", "Q4"),
+                     include.lowest = TRUE)]
+# # Standardize: mean=0, sd=1
+# a_base[, age_scaled := scale(Age)]
+# a_base[, DS1V_scaled := scale(DS1V)]
+
+
+# Filter to only Q1 vs Q4
+after <- a_after[quartile %in% c("Q1", "Q4")]
+
+# Clean lmm comparing extremes
+m <- relmatLmer(
+  formula = PlasmaAB142P ~  quartile + DS1V + Age + Gender + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + (1|PIDN), 
+  data = after,
+  relmat = list(PIDN = grm)
+)
+a <- summary(m)
+
+# stats
+m0 <- relmatLmer(
+  formula = PlasmaAB142P ~ DS1V + Age + Gender + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + (1|PIDN), 
+  data = after,
+  relmat = list(PIDN = grm)
+)
+t <- anova(m0, m)
+as.list(c(a$coefficients[2, ], t$`Pr(>Chisq)`[2], nobs = nobs(m)))
+
+dt1 <- CJ(dx = outcome, ix = "quartile")
+m0 <- relmatLmer(
+  as.formula(paste(dt1$dx, "~", paste(c(covs, "(1|PIDN)"), collapse = " + "))),
+  data = after,
+  relmat = list(PIDN = grm)
+)
+
+
+```
+
+
+
+## Functions
+```{r func}
+library(data.table)
+library(ggplot2)
+
+plot_heatmap_with_sig <- function(dt, 
+                                   row_var = "ix", 
+                                   col_var = "dx", 
+                                   value_var = "beta",
+                                   pval_var = "pval",
+                                   padj_var = "padj",
+                                   nobs_var = "nobs",
+                                   pval_thresh = 0.05,
+                                   padj_thresh = 0.05,
+                                   midpoint = 0,
+                                   low_color = "blue",
+                                   mid_color = "white",
+                                   high_color = "red",
+                                   row_order = NULL,
+                                   col_order = NULL) {
+  
+  # Create significance indicators
+  dt_plot <- copy(dt)
+  dt_plot[, sig_type := fcase(
+    get(padj_var) < padj_thresh, "padj",
+    get(pval_var) < pval_thresh, "pval",
+    default = "ns"
+  )]
+  
+  # Apply row ordering
+  if (!is.null(row_order)) {
+    dt_plot[[row_var]] <- factor(dt_plot[[row_var]], levels = row_order)
+  }
+  
+  # Apply column ordering
+  if (!is.null(col_order)) {
+    dt_plot[[col_var]] <- factor(dt_plot[[col_var]], levels = col_order)
+  }
+  
+  # Get nobs per column (assuming constant within each column)
+  nobs_labels <- dt_plot[, .(nobs = unique(get(nobs_var))), by = c(col_var)]
+  
+  # Create nobs labels for secondary axis
+  col_breaks <- if (!is.null(col_order)) col_order else unique(dt_plot[[col_var]])
+  nobs_bottom <- sapply(col_breaks, function(x) {
+    n <- nobs_labels[get(col_var) == x, nobs]
+    paste0("n=", n)
+  })
+  
+  # Create the base heatmap
+  p <- ggplot(dt_plot, aes(x = .data[[col_var]], y = .data[[row_var]])) +
+    geom_tile(aes(fill = .data[[value_var]]), color = "gray90") +
+    scale_fill_gradient2(
+      low = low_color,
+      mid = mid_color,
+      high = high_color,
+      midpoint = midpoint,
+      name = value_var
+    ) +
+    scale_x_discrete(drop = FALSE, position = "top", 
+                     sec.axis = dup_axis(labels = nobs_bottom, name = NULL)) +
+    scale_y_discrete(drop = FALSE) +
+    theme_minimal() +
+    theme(
+      axis.text.x.top = element_text(angle = 45, hjust = 0, vjust = 0),
+      axis.text.x.bottom = element_text(angle = 45, hjust = 1, vjust = 1),
+      panel.grid = element_blank(),
+      axis.title.x.top = element_text(margin = margin(b = 10))
+    ) +
+    labs(x = col_var, y = row_var)
+  
+  # Add borders for pval significance (gray)
+  if (any(dt_plot$sig_type == "pval")) {
+    p <- p + geom_tile(
+      data = dt_plot[sig_type == "pval"],
+      aes(x = .data[[col_var]], y = .data[[row_var]]),
+      fill = NA,
+      color = "gray50",
+      linewidth = 0.8
+    )
+  }
+  
+  # Add borders for padj significance (black)
+  if (any(dt_plot$sig_type == "padj")) {
+    p <- p + geom_tile(
+      data = dt_plot[sig_type == "padj"],
+      aes(x = .data[[col_var]], y = .data[[row_var]]),
+      fill = NA,
+      color = "black",
+      linewidth = 0.8
+    )
+  }
+  
+  return(p)
+}
+
+
+```
+
+
+
+# session
+```{r}
+sessionInfo()
+```
+

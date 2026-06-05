@@ -30,16 +30,21 @@ double calcMaxDeviation(NumericVector scores, LogicalVector isAbove,
                       double N_R, double N_non_specific, double p_weight) {
   int n = scores.size();
   double running_sum = 0.0;
-  double max_deviation = 0.0;
+  double max_pos = 0.0;  // Track maximum positive deviation
+  double max_neg = 0.0;  // Track maximum negative deviation
   
   for(int j = 0; j < n; j++) {
-    double step = isAbove[j] ? pow(scores[j], p_weight) / N_R : -1.0 / N_non_specific;
+    double step = isAbove[j] ? std::pow(scores[j], p_weight) / N_R : -1.0 / N_non_specific;
     running_sum += step;
     
-    if(fabs(running_sum) > max_deviation) {
-      max_deviation = fabs(running_sum);
+    if(running_sum > max_pos) {
+      max_pos = running_sum;
+    }
+    if(running_sum < max_neg) {
+      max_neg = running_sum;
     }
   }
   
-  return running_sum > 0 ? max_deviation : -max_deviation;
+  // Return the max deviation with the larger absolute value
+  return std::fabs(max_pos) > std::fabs(max_neg) ? max_pos : max_neg;
 }

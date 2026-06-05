@@ -1,0 +1,665 @@
+---
+title: "WSS_results_plotting"
+author: "Robert R Butler III"
+date: "`r Sys.Date()`"
+output: 
+  html_notenook: 
+    fig_width: 8
+    fig_height: 6
+    code_folding: hide
+---
+
+# setup
+## packages & workspace
+```{r setup, message=FALSE}
+
+library(data.table)
+library(ggplot2)
+library(ggrepel)
+library(RColorBrewer)
+library(ComplexHeatmap)
+library(ggpubr)
+library(umap)
+library(emmeans)
+library(car)
+library(RNOmni)
+library(gt)
+library(MASS)
+library(GENESIS)
+library(lme4qtl)
+library(ordinal)
+
+# suppress messages
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+
+
+# WSL2
+# proj.dir <- file.path(
+#   "../"
+#   # "/mnt", "box", "Robert\ Butler\'s\ Files", "plasma_ptau_proteomics"
+# )
+# Windows
+proj.dir <- normalizePath(file.path(
+  "C:", "Users", "rrbutler", "Box", "Robert Butler's Files", "plasma_ptau_proteomics"
+), mustWork = TRUE)
+# setwd(proj.dir)
+knitr::opts_knit$set(root.dir = proj.dir)
+
+# global vars
+data_path <- "module_scores"
+nameset <- "dataProt_SS-205063.STRING"
+score <- "STRING.INT.WSS"
+# bios <- c(
+#   "PlasmaAB142P", "PlasmaAB140P", "PlasmaABRatio", "PlasmaGFAP", 
+#   "PlasmaNfL", "PlasmaPTau181", "PlasmapTau217", "PlasmapTau217_AB42Ratio"
+# )
+
+
+```
+
+## Define the functions 
+```{r function}
+#' function to make a barplot with swarm points given a fitted linear model
+#' 
+#' @params dt data.table with data
+#' @params emm data.table with estimated marginal means from emmeans 
+#' @params x string, x column data tables specifying group
+#' @params y string, y column for dt only, emm depends on fixed emmeans values  
+#' @params col string, grouping column
+#' @params titl string, plot title
+#' @params pal vector, list of color palette values for scale_color_manual
+#' 
+#' @return ggplot object
+bar_swarm <- function(dt, emm, x, y, col, titl, 
+                      pal = RColorBrewer::brewer.pal("Dark2", n = 7)) {
+  # Convert emmeans to data.frame if needed
+  if("emmGrid" %in% class(emm)) {
+    emm_df <- as.data.frame(emm)
+  } else {
+    emm_df <- emm
+  }
+
+  p <- ggplot(dt, aes(x = .data[[x]], y = .data[[y]], color = .data[[col]], fill = .data[[col]])) +
+   geom_col(
+      data = emm_df,
+      aes(x = .data[[x]], y = emmean, fill = .data[[x]]),
+      width = 0.6
+    ) +
+    # Error bars using emmean ± SE
+    geom_errorbar(
+      data = emm_df,
+      aes(x = .data[[x]], ymin = emmean - SE, ymax = emmean + SE, color = .data[[x]]),
+      width = 0.3,
+      size = 0.8,
+      inherit.aes = FALSE,
+      color = "black"
+    ) +
+    geom_jitter(
+      data = dt,
+      aes(x = .data[[x]], y = .data[[y]]),
+      position = position_jitter(width = 0.2, seed = 123), 
+      size = 2,
+      color = "black"
+    ) +
+    theme_classic() +
+    ggtitle(titl) +
+    scale_color_manual(values = pal) +
+    scale_fill_manual(values = pal) +
+    theme(
+      axis.text.x = element_text(
+        angle = 45, 
+        hjust = 1, 
+        vjust = 1, 
+        family = 'Arial',
+        face = 'bold',
+        size = 12
+      ),
+      axis.text.y = element_text(
+        family = 'Arial',
+        face = 'bold',
+        size = 8
+      ),
+      axis.title.y = element_text(
+        face = 'bold', 
+        family = 'Arial', 
+        size = 12
+      ), 
+      plot.title = element_text(
+        hjust = 0.5, 
+        face = 'bold', 
+        family = 'Arial', 
+        size = 12
+      ), 
+      plot.subtitle = element_text(
+        hjust = 0.5, 
+        face = 'bold', 
+        family = 'Arial', 
+        size = 8
+      ),
+      legend.position = 'none',
+      axis.title.x = element_blank()
+    )
+  # # Add conditional ordering
+  # if(x == "group") {
+  #   p <- p + scale_x_discrete(
+  #     limits = c('CM', 'Wt', 'Wt_C31', 'PS19', 'PS19_C31'),
+  #     labels = function(x) gsub("_", " + ", x)
+  #   )
+  # }
+  return(p)
+}
+
+
+#' Create a Compact Summary String of a Linear Model
+#'
+#' This function extracts key statistics from a linear model summary and formats 
+#' them into a compact string suitable for plot subtitles or inline reporting.
+#' The string includes R-squared, F-statistic with degrees of freedom, and p-value.
+#'
+#' @param model An object of class 'lm' (linear model)
+#' @param digits Integer indicating the number of decimal places for R-squared and F-statistic (default: 3)
+#' @param p_digits Integer indicating the number of decimal places for p-value (default: 3)
+#' @param include_adj_r logical; whether to include adjusted R-squared (default: FALSE)
+#'
+#' @return A character string containing formatted model statistics
+#'
+#' @examples
+#' # Create a simple linear model
+#' model <- lm(mpg ~ wt + hp, data = mtcars)
+#' 
+#' # Get compact summary string
+#' model_subtitle(model)
+#' 
+#' # Use in a ggplot
+#' library(ggplot2)
+#' ggplot(mtcars, aes(wt, mpg)) +
+#'   geom_point() +
+#'   geom_smooth(method = "lm") +
+#'   labs(subtitle = model_subtitle(model, include_adj_r = TRUE))
+#'
+#' @export
+model_subtitle <- function(model, digits = 3, p_digits = 3, include_adj_r = FALSE) {
+  # Check input
+  if (!inherits(model, "lm")) {
+    stop("Input must be a linear model object of class 'lm'")
+  }
+
+  # Extract model summary
+  s <- summary(model)
+
+  # Extract components
+  r_squared <- round(s$r.squared, digits)
+  f_stat <- round(s$fstatistic["value"], digits)
+  df1 <- s$fstatistic["numdf"]
+  df2 <- s$fstatistic["dendf"]
+  p_value <- pf(s$fstatistic["value"], df1, df2, lower.tail = FALSE)
+
+  # Format p-value
+  if (p_value < 2e-16) {
+    p_str <- "p < 2e-16"
+  } else if (p_value < 10^(-p_digits)) {
+    p_str <- paste("p =", formatC(p_value, format = "e", digits = 2))
+  } else {
+    p_str <- paste("p =", round(p_value, p_digits))
+  }
+
+  # Build the result string
+  if (include_adj_r) {
+    adj_r_squared <- round(s$adj.r.squared, digits)
+    result <- sprintf("R² = %s (adj. R² = %s), F(%d, %d) = %s, %s", 
+                     r_squared, adj_r_squared, df1, df2, f_stat, p_str)
+  } else {
+    result <- sprintf("R² = %s, F(%d, %d) = %s, %s", 
+                     r_squared, df1, df2, f_stat, p_str)
+  }
+
+  return(result)
+}
+
+
+#' Generalized linear model based on a flexible formula
+#'
+#' @param dat Data.table with the original data
+#' @param m0 lmerMod baseline model with without the exposure element
+#' @param outcome String specifying the column in dat containing the outcome variable
+#' @param exposure String specifying the column in dat containing the exposure variable
+#' @param covs Vector of column names containing covariates to be included in the formula
+#' @param mat dsCMatrix a Generalized relatedness matrix
+#'
+#' @returns A list: 'Estimate' (beta), 'Std. Error' (se), 't value' (test statistic), 'Pr(>Chisq)' (p-value), 'nobs' (number of observations)
+get_linreg <- function(dat, outcome, exposure, covs = c(), mat) {
+  m <- relmatLmer( # remember in the formula, exposure must come first after ~
+    as.formula(paste(outcome, "~", paste(c(exposure, covs, "(1|PIDN)"), collapse = " + "))),
+    data = dat,
+    relmat = list(PIDN = mat)
+  )
+  t <- suppressWarnings(anova(m0, m))
+  a <- summary(m)
+  return(as.list(c(a$coefficients[2, ], t$`Pr(>Chisq)`[2], nobs = nobs(m))))
+}
+
+#' Recodes dummy categorical variables and can subset by vector of categories
+#'
+#' @param dat Data.table with the original data
+#' @param dcol String representing the column to be split
+#' @param keep Vector of strings that are the categories within dcol to extract. default is all c()
+#'
+#' @returns modified data.table with new dummy variable columns named "dcol.category" after original column
+recode_dummies <- function(dat, dcol, keep = c()) {
+  dt <- dat
+  # check input
+  if (length(keep) == 0) {
+    inds <- unique(dt[[dcol]])
+  } else if (length(keep) > 0 & all(keep %in% unique(dt[[dcol]]))) {
+    inds <- unique(dt[[dcol]])[unique(dt[[dcol]]) %in% keep]
+  } else {
+    stop("Keep must be a vector of names in the original column")
+  }
+  # split out dummies
+  dt[, c(paste(dcol, inds, sep = ".")) := lapply(inds, function(x) ifelse(get(dcol) == x, 1, 0))]
+  # reorder behind original variable
+  v <- grep(paste0("^", dcol, "$"), names(dt))[1]
+  inds <- paste(dcol, inds, sep = ".")
+  setcolorder(dt, c(names(dt)[1:v], inds, names(dt)[(v + 1):(ncol(dt) - length(inds))]))
+  return(dt)
+}
+
+
+
+#' Plot Heatmap with Significance Borders
+#'
+#' Creates a heatmap with significance indicators shown as borders around tiles.
+#' Supports optional transposition of the heatmap axes.
+#'
+#' @param dt A data.table containing the data to plot
+#' @param row_var Character string specifying the column to use for rows
+#' @param col_var Character string specifying the column to use for columns
+#' @param value_var Character string specifying the column containing values to plot
+#' @param pval_var Character string specifying the column containing p-values
+#' @param padj_var Character string specifying the column containing adjusted p-values
+#' @param nobs_var Character string specifying the column containing sample sizes
+#' @param pval_thresh Numeric threshold for p-value significance (default: 0.05)
+#' @param padj_thresh Numeric threshold for adjusted p-value significance (default: 0.05)
+#' @param midpoint Numeric midpoint for color scale (default: 0)
+#' @param low_color Color for low values (default: "blue")
+#' @param mid_color Color for midpoint values (default: "white")
+#' @param high_color Color for high values (default: "red")
+#' @param row_order Optional vector specifying the order of rows
+#' @param col_order Optional vector specifying the order of columns
+#' @param transpose Logical indicating whether to transpose the heatmap (default: FALSE).
+#'   When TRUE, row_var and col_var are swapped, module terms appear on top at 45°,
+#'   and nobs appear on the right axis without rotation.
+#'
+#' @return A ggplot2 object
+#'
+#' @details
+#' Significance is indicated by tile borders:
+#' \itemize{
+#'   \item Black border: Significant by adjusted p-value (padj < padj_thresh)
+#'   \item Gray border: Significant by nominal p-value (pval < pval_thresh)
+#'   \item No border: Not significant
+#' }
+#'
+#' When transpose = TRUE, the axes are swapped and formatting is adjusted so that
+#' module terms appear on top at 45° angles and sample sizes appear on the right
+#' axis without rotation.
+#'
+#' @importFrom ggplot2 ggplot aes geom_tile scale_fill_gradient2 scale_x_discrete 
+#'   scale_y_discrete theme_minimal theme element_text element_blank labs margin 
+#'   dup_axis sec_axis
+#' @importFrom data.table copy
+#' @export
+plot_heatmap_with_sig <- function(dt, 
+                                   row_var = "ix", 
+                                   col_var = "dx", 
+                                   value_var = "beta",
+                                   pval_var = "pval",
+                                   padj_var = "padj",
+                                   nobs_var = "nobs",
+                                   pval_thresh = 0.05,
+                                   padj_thresh = 0.05,
+                                   midpoint = 0,
+                                   low_color = "blue",
+                                   mid_color = "white",
+                                   high_color = "red",
+                                   row_order = NULL,
+                                   col_order = NULL,
+                                   transpose = FALSE) {
+  
+  # Handle transposition by swapping variables and orders
+  if (transpose) {
+    # Swap row and column variables
+    temp_var <- row_var
+    row_var <- col_var
+    col_var <- temp_var
+    
+    # Swap ordering vectors
+    temp_order <- row_order
+    row_order <- col_order
+    col_order <- temp_order
+  }
+  
+  # Create significance indicators
+  dt_plot <- copy(dt)
+  dt_plot[, sig_type := fcase(
+    get(padj_var) < padj_thresh, "padj",
+    get(pval_var) < pval_thresh, "pval",
+    default = "ns"
+  )]
+  
+  # Apply row ordering
+  if (!is.null(row_order)) {
+    dt_plot[[row_var]] <- factor(dt_plot[[row_var]], levels = row_order)
+  }
+  
+  # Apply column ordering
+  if (!is.null(col_order)) {
+    dt_plot[[col_var]] <- factor(dt_plot[[col_var]], levels = col_order)
+  }
+  
+  # Get nobs per variable (column for normal, row for transposed)
+  nobs_by_var <- if (transpose) row_var else col_var
+  nobs_labels <- dt_plot[, .(nobs = unique(get(nobs_var))), by = c(nobs_by_var)]
+  
+  # Create nobs labels for secondary axis
+  nobs_breaks <- if (transpose) {
+    if (!is.null(row_order)) row_order else unique(dt_plot[[row_var]])
+  } else {
+    if (!is.null(col_order)) col_order else unique(dt_plot[[col_var]])
+  }
+  
+  nobs_labels_vec <- sapply(nobs_breaks, function(x) {
+    n <- nobs_labels[get(nobs_by_var) == x, nobs]
+    paste0("n=", n)
+  })
+  
+  # Create the base heatmap
+  p <- ggplot(dt_plot, aes(x = .data[[col_var]], y = .data[[row_var]])) +
+    geom_tile(aes(fill = .data[[value_var]]), color = "gray90") +
+    scale_fill_gradient2(
+      low = low_color,
+      mid = mid_color,
+      high = high_color,
+      midpoint = midpoint,
+      name = value_var
+    ) +
+    theme_minimal() +
+    theme(
+      panel.grid = element_blank()
+    ) +
+    labs(x = col_var, y = row_var)
+  
+  # Configure axes based on transpose setting
+  if (transpose) {
+    # Transposed: module terms on top at 45°, nobs on right without rotation
+    p <- p +
+      scale_x_discrete(drop = FALSE, position = "top") +
+      scale_y_discrete(drop = FALSE, position = "left",
+                       sec.axis = dup_axis(labels = nobs_labels_vec, name = NULL)) +
+      theme(
+        axis.text.x.top = element_text(angle = 45, hjust = 0, vjust = 0),
+        axis.text.y.right = element_text(angle = 0, hjust = 0),
+        axis.title.x.top = element_text(margin = margin(b = 10)),
+        axis.title.y.right = element_blank()
+      )
+  } else {
+    # Normal: dx on top at 45°, nobs on bottom at 45°
+    p <- p +
+      scale_x_discrete(drop = FALSE, position = "top", 
+                       sec.axis = dup_axis(labels = nobs_labels_vec, name = NULL)) +
+      scale_y_discrete(drop = FALSE) +
+      theme(
+        axis.text.x.top = element_text(angle = 45, hjust = 0, vjust = 0),
+        axis.text.x.bottom = element_text(angle = 45, hjust = 1, vjust = 1),
+        axis.title.x.top = element_text(margin = margin(b = 10))
+      )
+  }
+  
+  # Add borders for pval significance (gray)
+  if (any(dt_plot$sig_type == "pval")) {
+    p <- p + geom_tile(
+      data = dt_plot[sig_type == "pval"],
+      aes(x = .data[[col_var]], y = .data[[row_var]]),
+      fill = NA,
+      color = "gray50",
+      linewidth = 0.8
+    )
+  }
+  
+  # Add borders for padj significance (black)
+  if (any(dt_plot$sig_type == "padj")) {
+    p <- p + geom_tile(
+      data = dt_plot[sig_type == "padj"],
+      aes(x = .data[[col_var]], y = .data[[row_var]]),
+      fill = NA,
+      color = "black",
+      linewidth = 0.8
+    )
+  }
+  
+  return(p)
+}
+
+
+#' Combine Linear Regression Results
+#'
+#' This function reads linear regression GLM results for specified tests,
+#' combines them into a single data.table, calculates FDR-adjusted p-values by
+#' diagnosis group, and merges with module term information.
+#'
+#' @param input Character string specifying the base directory path where 
+#'   test subdirectories are located.
+#' @param cogs Character vector of test names (e.g., c("ADNI_MEM", "ADNI_EF")).
+#'   Each name should correspond to a subdirectory in the input path.
+#' @param sum_dt A data.table containing module information with required columns:
+#'   \itemize{
+#'     \item module: Module identifier (matches 'ix' in result files)
+#'     \item term: Module term/description
+#'   }
+#'
+#' @return A data.table with combined results containing:
+#'   \itemize{
+#'     \item All columns from the original regression files
+#'     \item stat: Renamed from either 'z stat' or 't stat'
+#'     \item padj: FDR-adjusted p-values (calculated within each dx group)
+#'     \item LogP: -log10 transformed p-values
+#'     \item term: Module term merged from sum_dt
+#'   }
+#'
+#' @details 
+#' The function searches for files matching the pattern "GNPC.*\\.{cog}\\.linreg_glm\\.csv\\.gz"
+#' in subdirectories named after each test. It handles multiple or missing
+#' files with warnings. The statistical column is standardized to 'stat' regardless
+#' of whether it was originally 'z stat' or 't stat'.
+#'
+#' @importFrom data.table fread setnames rbindlist
+#' @export
+#'
+#' @examples
+#' \dontrun{
+#' # Read results for memory and executive function tests
+#' results <- combine_glm_results(
+#'   input = "/path/to/results",
+#'   cogs = c("ADNI_MEM", "ADNI_EF"),
+#'   sum_dt = module_terms
+#' )
+#' }
+combine_glm_results <- function(input, cogs, sum_dt) {
+  
+  # Read individual cognitive test results
+  dat <- lapply(cogs, function(i) {
+    # List files matching the pattern
+    pattern <- paste0("dataProt_SS-205063.*\\.", i, "\\.lme4qtl\\.csv\\.gz$")
+    file_path <- list.files(
+      path = file.path(proj.dir, input, i),
+      pattern = pattern,
+      full.names = TRUE
+    )
+    
+    # Read the file (assuming one match per directory)
+    if (length(file_path) == 1) {
+      fread(file_path)
+    } else if (length(file_path) > 1) {
+      warning(paste("Multiple files found for", i, "- reading first match"))
+      fread(file_path[1])
+    } else {
+      warning(paste("No file found for", i))
+      return(NULL)
+    }
+  })
+  
+  # Standardize column names (z stat or t stat -> stat)
+  dat <- lapply(dat, setnames, 
+    old = c("z stat", "t stat"), 
+    new = c("stat", "stat"),
+    skip_absent = TRUE
+  )
+  
+  # Combine all results
+  dat <- rbindlist(dat, fill = TRUE)
+  
+  # Calculate FDR-adjusted p-values by diagnosis group
+  dat[, padj := p.adjust(pval, method = "fdr"), by = dx]
+  
+  # Add -log10 transformed p-values
+  dat[, LogP := -log10(pval)]
+  
+  # Merge with module terms
+  dat <- merge(dat, sum_dt[, .(module, term)], by.x = "ix", by.y = "module")
+  
+  return(dat)
+}
+
+
+```
+
+## Load data
+```{r make_seurat, include=FALSE}
+# module preservation data
+gnpc <- fread("gnpc/validation/ADRCvsGNPC.preservation_summary.csv")
+gnpc[, Biomarker := tstrsplit(module, "\\.", keep = 1)]
+gnpc[, Biomarker := factor(Biomarker, 
+  levels = c("Merged", "PlasmaAB140P", "PlasmaAB142P", "PlasmaGFAP", 
+             "PlasmaNfL", "PlasmaPTau181", "PlasmapTau217")
+)]
+
+# update terms data for prevervation
+scores <- fread(file.path(proj.dir, data_path, "STRING.INT.WSS.terms.csv"))
+scores <- scores[gnpc[,.(module, mean.Zsum)], on = c(name = "module")]
+fwrite(scores, 
+  file = file.path(proj.dir, data_path, "STRING.INT.WSS.terms.Zsum.csv")
+)
+
+```
+
+
+# Heatmap of WSS clin associations
+## cog type
+```{r wss_clin}
+input <- "WSS_clin"
+cogs <- c("Diagnosis_bin", "last_diag_bin", "MoCA", "last_MoCA")
+
+# module preservation data
+gnpc <- fread("gnpc/validation/ADRCvsGNPC.preservation_summary.csv")
+gnpc[, Biomarker := tstrsplit(module, "\\.", keep = 1)]
+gnpc[, Biomarker := factor(Biomarker, 
+  levels = c("Merged", "PlasmaAB140P", "PlasmaAB142P", "PlasmaGFAP", 
+             "PlasmaNfL", "PlasmaPTau181", "PlasmapTau217")
+)]
+
+# read in data
+dat <- combine_glm_results(input, cogs, gnpc)
+
+# plot
+p <- plot_heatmap_with_sig(
+  dt = dat,
+  row_var = "term",
+  col_var = "dx",
+  value_var = "LogP",
+  row_order = rev(gnpc[mean.Zsum > 2 & (is.mod + is.str >= 7), term]),
+  col_order = cogs
+)
+
+ggsave( 
+  filename = file.path("manuscript", "Figure_4",
+    paste(nameset, "Cognitive_associations.ADRC.pdf", sep = ".")
+  ),
+  plot = p,
+  device = cairo_pdf,
+  width = 5.5,
+  height = 10
+)
+
+
+```
+
+## comorbidity type
+```{r wss_comorbidity}
+input <- "WSS_clin"
+cogs <- c("ANXIETY", "DEP2YRS", "DIABETES", "HYPERCHO", "HYPERTEN")
+gnpc <- fread("gnpc/validation/ADRCvsGNPC.preservation_summary.csv")
+
+# read in data
+dat <- combine_glm_results(input, cogs, gnpc)
+
+# plot
+p <- plot_heatmap_with_sig(
+  dt = dat,
+  row_var = "term",
+  col_var = "dx",
+  value_var = "LogP",
+  row_order = gnpc[order(Biomarker, -mean.Zsum)][mean.Zsum > 2 & (is.mod + is.str >= 7), term],
+  col_order = rev(cogs),
+  transpose = TRUE
+)
+
+ggsave( 
+  filename = file.path("manuscript", "Figure_5",
+    paste(nameset, "Comorbidity_associations.ADRC.pdf", sep = ".")
+  ),
+  plot = p,
+  device = cairo_pdf,
+  width = 12,
+  height = 4
+)
+
+
+```
+
+
+
+# summary preservation scores plot
+```{r sum_preserv}
+
+
+p <- ggplot(gnpc, 
+    aes(x = moduleSize, y = mean.Zsum, color = Biomarker, label = term)) +
+  geom_point(size = 3) +
+  geom_text_repel(max.overlaps = 15) +
+  geom_hline(yintercept = c(2, 10), linetype = "dashed", color = "red") +
+  scale_x_log10() +
+  labs(title = "Module Preservation Statistics",
+       subtitle = "Zsummary > 10: Strong preservation, 2-10: Moderate, <2: Weak") +
+  scale_color_brewer(palette = "Dark2") +
+  theme_minimal() +
+  theme(
+    # legend.position = 'none'
+  )
+
+ggsave(
+  plot = p,
+  filename = file.path("manuscript", "Figure_4",
+    paste(nameset, "preservation_sumstats_plot", "pdf", sep = ".")
+  ),
+  width = 9
+)
+
+
+```
+
+
+# session
+```{r}
+sessionInfo()
+```
+

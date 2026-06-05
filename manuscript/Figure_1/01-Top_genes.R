@@ -222,11 +222,28 @@ setattr(result, 'names', input)
 
 # merge
 result <- rbindlist(result)
+result[, dx := gsub('Plasma', '', dx)
+       ][, dx := gsub('AB140P', 'A\u03b240', dx)
+         ][, dx := gsub('AB142P', 'A\u03b242', dx)
+           ][, dx := gsub('PTau', 'pTau', dx)
+             ][, dx := gsub('ABRatio', 'A\u03b242/A\u03b240', dx)
+               ][, dx := gsub('_AB42Ratio', '/A\u03b242', dx)
+]
+setorder(result, dx)
+
 # count of significant occurences across biomarkers
 result[, count := sum(.SD < 0.05), by = NCBI_ID, .SDcols = "padj"]
 
 # drop APOE from input so it will match the results
 input <- gsub(".APOE", "", input)
+input <- gsub('Plasma', '', input)
+input <- gsub('AB140P', 'A\u03b240', input)
+input <- gsub('AB142P', 'A\u03b242', input)
+input <- gsub('PTau', 'pTau', input)
+input <- gsub('ABRatio', 'A\u03b242/A\u03b240', input)
+input <- sort(gsub('_AB42Ratio', '/A\u03b242', input))
+
+
 
 # plot colored by beta and t stat
 lapply(c("beta", "t stat"), function(j) {
@@ -286,7 +303,7 @@ graphics.off()
 # if file exists, make a volcano
 p.list <- lapply(input, function(i) {
   x <- result[dx == i]
-  my_volcano(x, titl = i, sub = paste("N =", unique(x[, nobs])))
+  my_volcano(x, titl = i)
 })
 
 ggsave(

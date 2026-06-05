@@ -32,7 +32,7 @@ today = format(Sys.Date(), '%Y%m%d')
 nameset = 'continuous_property_magma'
 f_names = c('betaLOGP', 'signLOGP', 't_stat')
 f_prefix = 'AdultBrain'
-gwas = c('ALZ', 'ALS', 'FTD', 'LBD', 'PD', 'rAOO', 'BMI')
+gwas = c('ALZ_g1000', 'ALS_g1000', 'FTD_g1000', 'LBD_g1000', 'PD_g1000', 'rAOO_g1000', 'BMI_g1000')
 
 
 

@@ -6,6 +6,7 @@
 !*.pl
 !*.py
 !*.R
+!*.cpp
 !*.Rmd
 !*.ipynb
 !*.md
@@ -18,3 +19,5 @@
 .Rproj.user
 
 # But do ignore these files...
+sphere/
+sphere.py
