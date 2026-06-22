@@ -78,6 +78,12 @@ option_list <- list(
     help = "File path to eigengenes csv [default: %default]"
   ),
   make_option(
+    c("--preds"),
+    type = "character",
+    default = "",
+    help = "File path to predicted eigengenes csv [default: %default]"
+  ),
+  make_option(
     c("-m", "--pcs"),
     type = "character",
     default = "genomic/mypcair.PCs.csv",
@@ -116,6 +122,7 @@ fields <- c(
   "prots",
   "covs",
   "eigengenes",
+  "preds",
   "pcs",
   "outcome",
   "binomial",
@@ -177,9 +184,12 @@ a <- fread(input, colClasses = c(PIDN = "character"))
   # covs <- unique(c(covs, names(a)[names(a) %like% "^PC\\d{1,2}$"])) # flexible for PCs
 # }
 
-# # Load eigengenes
-# x <- fread(eigengenes)
-# a <- merge(a, x, by = "SampleID")
+if (preds != "") {
+  # Load predicted
+  x <- fread(preds)
+  names(x)[-1] <- paste0(names(x)[-1], ".pred")
+  a <- merge(a, x, by = "SampleID")
+}
 
 # shield improper outcome
 setnames(a, 
@@ -423,6 +433,7 @@ setnames(a,
 )
 
 cols = c(qc_cols, covs, orig_outcome, prots)
+
 fwrite(
   a[, ..cols], 
   file = file.path(output, paste(nameset, "WSSnorm.csv.gz", sep="."))

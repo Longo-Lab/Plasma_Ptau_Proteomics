@@ -806,3 +806,135 @@ parallel -j 1 Rscript 06-TREAT-AD_GSEA.R   \
   -n "dataProt_SS-205063.follow-up.{1}{2}"  \
   ::: "${names[@]}" \
   ::: "${pred[@]}"
+
+
+
+
+# Continuous variables -----------------------
+names=(
+  "MoCA"
+  "CDRSUM"
+  "last_MoCA"
+  "last_CDRSUM"
+)
+
+# QC and surrogates
+parallel -j 4 Rscript 13-sample_QC_prediction.R \
+  -i "dataProt_SS-205063.follow-up_clin.csv" \
+  -p "WSS_names.txt" \
+  --clin \
+  -o "WSS_clin_actual/{}" \
+  -v "Age,Gender,Storage_days,Study,Subarray,Fed.Fasted,HybControlNormScale,Storage,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8" \
+  -c {} \
+  -n "dataProt_SS-205063.follow-up_clin_continuous.{}" \
+  ::: "${names[@]}" 
+
+# 02 - lme4qtl ------
+# covariates to be included, biomarker ratios do not include HybControlNormScale
+covs=(
+  'Age,Gender,Storage_days,Subarray,Fed.Fasted,HybControlNormScale,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6'
+  'Age,Gender,Storage_days,Subarray,Fed.Fasted,HybControlNormScale,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC5,PC6'
+  'Age,Gender,Storage_days,Subarray,HybControlNormScale,Storage,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6,PC7'
+  'Age,Gender,Storage_days,Subarray,Fed.Fasted,HybControlNormScale,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6'
+)
+# Subarray for SomaLogic run as covariates in cases where it showed up in the top 
+#   half of feature importance for 01-sample_QC.R 
+recodes=(
+  'Subarray,B,E,H'
+  'Subarray,D,G,C,A,H,B,E'
+  'Subarray,B,E,H'
+  'Subarray,D,G,C,A,H,B,E'
+)
+
+parallel -j 1 Rscript 02-linreg_lme4qtl.R \
+  -i "WSS_clin_actual/{1}/dataProt_SS-205063.follow-up_clin_continuous.{1}.INTnorm.csv.gz" \
+  -o "WSS_clin_actual/{1}"   \
+  --prots "WSS_names.txt" \
+  -v {3} \
+  -d {2} \
+  -s 'Age,Storage_days' \
+  -c "{1}" \
+  -t 18 \
+  -n "dataProt_SS-205063.follow-up_clin_continuous.{1}" \
+  ::: "${names[@]}" \
+  :::+ "${recodes[@]}"  \
+  :::+ "${covs[@]}"  
+
+
+# QC and surrogates
+parallel -j 4 Rscript 13-sample_QC_prediction.R \
+  -i "dataProt_SS-205063.follow-up_clin.csv" \
+  -p "WSS_names_pred.txt" \
+  --clin \
+  -o "WSS_clin_predict/{}" \
+  -v "Age,Gender,Storage_days,Study,Subarray,Fed.Fasted,HybControlNormScale,Storage,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8" \
+  -c {} \
+  -n "dataProt_SS-205063.follow-up_clin_continuous.{}" \
+  ::: "${names[@]}" 
+
+parallel -j 1 Rscript 02-linreg_lme4qtl.R \
+  -i "WSS_clin_predict/{1}/dataProt_SS-205063.follow-up_clin_continuous.{1}.INTnorm.csv.gz" \
+  -o "WSS_clin_predict/{1}"   \
+  --prots "WSS_names_pred.txt" \
+  -v {3} \
+  -d {2} \
+  -s 'Age,Storage_days' \
+  -c "{1}" \
+  -t 18 \
+  -n "dataProt_SS-205063.follow-up_clin_continuous.{1}" \
+  ::: "${names[@]}" \
+  :::+ "${recodes[@]}"  \
+  :::+ "${covs[@]}"  
+
+
+
+###################### GNPC backup analysis ############################
+names=(
+  "Merged.M1" 
+  "Merged.M11" 
+  "Merged.M7" 
+  "Merged.M9" 
+  "Merged.M2" 
+  "PlasmaPTau181.M8" 
+  "Merged.M6" 
+  "PlasmaAB140P.M17" 
+  "Merged.M12" 
+  "Merged.M4" 
+  "Merged.M5" 
+  "PlasmaAB140P.M20" 
+  "Merged.M8" 
+  "PlasmaPTau181.M35" 
+  "Merged.M3" 
+  "Merged.M26" 
+  "Merged.M13" 
+  "Merged.M10" 
+  "PlasmaPTau181.M18" 
+  "Merged.M14" 
+  "Merged.M19" 
+  "Merged.M16" 
+  "PlasmaPTau181.M26" 
+  "Merged.M29" 
+  "Merged.M24" 
+  "PlasmaPTau181.M13" 
+  "PlasmaPTau181.M47" 
+  "Merged.M25" 
+  "PlasmaAB140P.M35" 
+  "PlasmaPTau181.M46" 
+  "Merged.M20" 
+  "Merged.M32" 
+  "Merged.M22" 
+  "Merged.M15" 
+  "Merged.M21" 
+  "Merged.M18" 
+  "PlasmaPTau181.M5" 
+  "PlasmaAB140P.M15" 
+  "Merged.M27" 
+  "PlasmaAB140P.M40" 
+  "Merged.M17" 
+  "PlasmaNfL.M3" 
+  "PlasmaAB140P.M18" 
+  "PlasmaPTau181.M30" 
+  "PlasmaGFAP.M12"
+)
+
+

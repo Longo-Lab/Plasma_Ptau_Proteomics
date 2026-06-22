@@ -40,6 +40,7 @@ library(stringr)
 library(RColorBrewer)
 library(Cairo)
 library(emmeans)
+library(extrafont)
 
 # read in args
 option_list <- list(
@@ -450,6 +451,40 @@ extract_curve_features <- function(dt, span = 0.75, n_grid = 50) {
   }, by = Biomarker]
   
   return(curve_features)
+}
+
+
+#' Test for trajectory differences between hi/lo groups across time bins using LRT
+#'
+#' @param dat Data.table with the original data
+#' @param outcome String specifying the outcome variable (e.g., "AGE")
+#' @param exposure String specifying the exposure variable (e.g., "hi.lo")
+#' @param time_var String specifying the time variable (e.g., "bin")
+#' @param covs Vector of column names containing covariates
+#'
+#' @returns A named list with LRT results and the alternative model
+get_trajectory_lrt <- function(dat, outcome, exposure, time_var, covs = c()) {
+  
+  # Null model: parallel trajectories (no interaction)
+  formula_null <- paste(outcome, "~", paste(c(exposure, time_var, covs), collapse = " + "))
+  model_null <- glm(formula_null, data = dat, family = gaussian())
+  
+  # Alternative model: different trajectories (with interaction)
+  formula_alt <- paste(outcome, "~", paste(c(exposure, time_var, 
+                                             paste0(exposure, ":", time_var), 
+                                             covs), collapse = " + "))
+  model_alt <- glm(formula_alt, data = dat, family = gaussian())
+  
+  # Likelihood ratio test
+  lrt <- anova(model_null, model_alt, test = "LRT")
+  
+  return(list(
+    deviance = lrt$Deviance[2],
+    df = lrt$Df[2],
+    pval = lrt$`Pr(>Chi)`[2],
+    nobs = nobs(model_alt),
+    model = model_alt  # Return for emmeans if needed
+  ))
 }
 
 
@@ -970,19 +1005,6 @@ ggsave(
 
 
 # Testing for bin specific signals of earlier onset ---------------------
-# p_all <- ggplot(a_long, aes(x = estaget0, y = Score, group = bin, fill = Biomarker, color = Biomarker)) +
-  # geom_point() +
-  # facet_wrap(~ Biomarker, scales = "free_y") +
-  # theme_classic() +
-  # labs(x = "Estimated Age at Symptom Onset (years)",
-       # y = "Module Score",
-       # title = "Biomarker Trajectories Correlated to Onset Age") +
-  # theme(legend.position = "bottom",
-        # legend.text = element_text(size = 7),
-        # strip.text = element_text(size = 10, face = "bold"))
-
-# print(p_all)
-
 # need to adjust for Gender, PCs, weak N though
 covs <- c("Gender")
 
@@ -999,22 +1021,40 @@ a_filt <- a_long[bin != "(-15,-10]"][, bin := droplevels(bin)]
 
 # binarize module per estdtt0 bin. Is being in the upper half significantly lower estaget0.
 a_filt[, hi.lo := ifelse(Score > median(Score), "hi", "lo"), by = .(Biomarker, bin)]
+
+# trajectory tests for significant biomarkers ---
+dt_lrt <- CJ(Biomarker = unique(a_filt$Biomarker))
+dt_lrt[, c("deviance", "df", "pval", "nobs") := {
+  get_trajectory_lrt(
+    a_filt[Biomarker == dt_lrt$Biomarker[.I]],
+    outcome = "AGE",
+    exposure = "hi.lo",
+    time_var = "bin",
+    covs = covs[1:3]
+  )
+}, by = Biomarker]
+
+# Adjust for multiple testing across biomarkers
+dt_lrt[, padj := p.adjust(pval, method = "fdr")]
+
+# individual bin tests for sig diff ---
 dt1 <- CJ(Biomarker = a_filt$Biomarker, bin = a_filt$bin, unique = TRUE)
+dt1[, Sig_Biomarker := Biomarker %in% dt_lrt[padj < 0.1, Biomarker]]
 
 # fast run function
-dt1[, c("beta", "se", "t stat", "pval", "nobs", "emmeans") := {
+dt1[Sig_Biomarker == TRUE, c("beta", "se", "t stat", "pval", "nobs", "emmeans") := {
   get_linreg(a_filt[Biomarker == dt1$Biomarker[.I] & bin == dt1$bin[.I]], 
-    outcome = "estaget0", 
+    outcome = "AGE", 
     exposure = "hi.lo",
     covs = covs[1:3],
     return_emmeans = TRUE
   )
 }, by=.I]
-dt1[, padj := p.adjust(pval, method = "fdr")]
+dt1[, padj := p.adjust(pval, method = "bonferroni"), by = Biomarker]
 
 # Create plots of emmeans
 sig <- dt1[padj < 0.05]
-y_range <- range(a_filt[Biomarker %in% sig$Biomarker, estaget0], na.rm = TRUE)
+y_range <- range(a_filt[Biomarker %in% sig$Biomarker, AGE], na.rm = TRUE)
 
 plot_list <- lapply(1:nrow(sig), function(i) {
   bio <- sig$Biomarker[i]
@@ -1032,7 +1072,7 @@ plot_list <- lapply(1:nrow(sig), function(i) {
     dt = plot_data,
     emm = emm_df,
     x = "hi.lo",
-    y = "estaget0",
+    y = "AGE",
     col = "hi.lo",
     titl = paste0(term, "\n", bio, " | ", bin_val, "\npadj = ", 
                   format(sig$padj[i], digits = 3)),
@@ -1065,8 +1105,12 @@ dt1[, emmeans := NULL]
 
 # Write to CSV
 fwrite(dt1, file = file.path(output, 
-  paste(nameset, biomarker, "hi-lo_regression.csv", sep = ".")
+  paste(nameset, biomarker, "hi-lo_pairwise_regression.csv", sep = ".")
 ))
+fwrite(dt_lrt, file = file.path(output, 
+  paste(nameset, biomarker, "hi-lo_lrt_trajectory.csv", sep = ".")
+))
+
 
 # Heatmap of progression ------------------------------------------------
 # Calculate mean score per biomarker per bin
@@ -1175,3 +1219,65 @@ ggsave(
   device = cairo_pdf
 )
 
+# Follow-up M8 ---------------------------------------------------------------
+# Filter to Merged.M8 and remove NA emmeans
+m8_data <- dt1[Biomarker == "Merged.M8" & !is.na(emmean.hi)]
+
+# Reshape to long format for plotting
+m8_long <- rbind(
+  m8_data[, .(bin, group = "hi", emmean = emmean.hi, SE = SE.hi, padj)],
+  m8_data[, .(bin, group = "lo", emmean = emmean.lo, SE = SE.lo, padj)]
+)
+
+# Create numeric x-axis position for bins
+bin_order <- c("(-10,-5]", "(-5,0]", "(0,5]", "(5,10]", "(10,15]")
+m8_long[, bin_num := match(bin, bin_order)]
+
+# Create p-value labels
+m8_long[, padj_label := ifelse(!is.na(padj), 
+                                sprintf("padj = %.3f", padj), 
+                                "")]
+
+# Plot
+p_m8 <- ggplot(m8_long, aes(x = bin_num, y = emmean, color = group, group = group)) +
+  geom_vline(xintercept = 2.5, linetype = "dashed", color = "gray40", linewidth = 0.8) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = emmean - SE, ymax = emmean + SE), 
+                width = 0.2, linewidth = 0.8) +
+  geom_text(aes(label = padj_label), 
+            vjust = -1.5, size = 3.5, 
+            color = "black", fontface = "bold",
+            family = "Arial") +
+  scale_x_continuous(breaks = 1:5, labels = bin_order) +
+  scale_color_manual(values = RColorBrewer::brewer.pal(n = 3, name = "Dark2")[-1],
+                     labels = c("High", "Low"),
+                     name = "Module Score") +
+  theme_classic(base_family = "Arial") +
+  labs(x = "Time to Threshold (years)",
+       y = "Age at Visit",
+       title = "Merged.M8 Module Trajectory by Score Group") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, 
+                               size = 10, face = "bold"),
+    axis.text.y = element_text(size = 10, face = "bold"),
+    axis.title = element_text(size = 12, face = "bold"),
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    legend.position = c(0.95, 0.05),  # Position in lower right (x=0.85, y=0.15)
+    legend.justification = c(1, 0),   # Anchor at bottom-right of legend box
+    legend.text = element_text(size = 10, face = "bold"),
+    legend.title = element_text(size = 11, face = "bold")
+  )
+
+print(p_m8)
+
+# Save
+ggsave(
+  plot = p_m8,
+  filename = file.path(output, 
+    paste(nameset, biomarker, "M8_trajectory.pdf", sep = ".")
+  ),
+  width = 4,
+  height = 6,
+  device = cairo_pdf
+)

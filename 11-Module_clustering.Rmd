@@ -426,40 +426,47 @@ fwrite(a_base[, .(PIDN, SampleID)], file = file.path("dataProt_SS-205063.baselin
 
 ## Save clinical data
 ```{r}
-a_base <- merge(a_base, 
-  x[, .(Sample_Id, CBTIA, TBI, DIABETES, CVCHF, CVHATT, CVAFIB, CVANGINA, HYPERCHO, HYPERTEN, DEP2YRS, ANXIETY)], 
-  by.x = "SampleID", 
-  by.y = "Sample_Id", 
-  all.x = TRUE, 
-  sort = FALSE
-)
+lapply(c("a_base", "a_after"), function(j) {
+  dt <- copy(get(j))
+  print(names(dt))
+  dt <- merge(dt, 
+    x[, .(Sample_Id, CBTIA, TBI, DIABETES, CVCHF, CVHATT, CVAFIB, CVANGINA, HYPERCHO, HYPERTEN, DEP2YRS, ANXIETY)], 
+    by.x = "SampleID", 
+    by.y = "Sample_Id", 
+    all.x = TRUE, 
+    sort = FALSE
+  )
+    
+  dt[!is.na(DIABETES), DIABETES := ifelse(DIABETES == 1 | DIABETES == 2, 1, 0)]
+  cols <- c("CBTIA", "TBI", "CVCHF", "CVHATT", "CVAFIB", "CVANGINA", "HYPERCHO", "HYPERTEN", "DEP2YRS", "ANXIETY")
+  dt[, (cols) := lapply(.SD, function(i) ifelse(i == 2, 0, i)), .SDcols = cols]
   
-a_base[!is.na(DIABETES), DIABETES := ifelse(DIABETES == 1 | DIABETES == 2, 1, 0)]
-cols <- c("CBTIA", "TBI", "CVCHF", "CVHATT", "CVAFIB", "CVANGINA", "HYPERCHO", "HYPERTEN", "DEP2YRS", "ANXIETY")
-a_base[, (cols) := lapply(.SD, function(i) ifelse(i == 2, 0, i)), .SDcols = cols]
-
-# check values
-summary_long <- melt(a_base[, .SD, .SDcols = c(cols, "DIABETES")], measure.vars = c(cols, "DIABETES"))[
-  , .(count = .N), by = .(variable, value)
-]
-dcast(summary_long, variable ~ value, value.var = "count", fill = 0)
-
-# simplified AD
-a_base[, Diagnosis_bin := fcase(
-  Diagnosis_group == "HC", 0L,
-  Diagnosis_group == "AD", 1L,
-  Diagnosis_group == "MCI", NA_integer_
-)]
-a_base[, last_diag_bin := fcase(
-  last_diagnosis == "HC", 0L,
-  last_diagnosis == "AD", 1L,
-  last_diagnosis == "MCI", NA_integer_
-)]
-
-set.seed(123)
-a_base[, RAND := sample(c(0L, 1L), size = .N, replace = TRUE)]
+  # check values
+  summary_long <- melt(dt[, .SD, .SDcols = c(cols, "DIABETES")], measure.vars = c(cols, "DIABETES"))[
+    , .(count = .N), by = .(variable, value)
+  ]
+  dcast(summary_long, variable ~ value, value.var = "count", fill = 0)
+  
+  # simplified AD
+  dt[, Diagnosis_bin := fcase(
+    Diagnosis_group == "HC", 0L,
+    Diagnosis_group == "AD", 1L,
+    Diagnosis_group == "MCI", NA_integer_
+  )]
+  dt[, last_diag_bin := fcase(
+    last_diagnosis == "HC", 0L,
+    last_diagnosis == "AD", 1L,
+    last_diagnosis == "MCI", NA_integer_
+  )]
+  
+  set.seed(123)
+  dt[, RAND := sample(c(0L, 1L), size = .N, replace = TRUE)]
+  
+  assign(j, dt, envir = .GlobalEnv)
+})
 
 fwrite(a_base, file = file.path("dataProt_SS-205063.baseline_clin.csv"))
+fwrite(a_after, file = file.path("dataProt_SS-205063.follow-up_clin.csv"))
 
 ```
 

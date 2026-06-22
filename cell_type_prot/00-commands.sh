@@ -137,7 +137,6 @@ Rscript 06-EWCE_enrichment_WSS.R  \
 Rscript 05-EWCE_heatmap.R  \
   -i "Merged.M1,Merged.M11,Merged.M7,Merged.M9,Merged.M2,PlasmaPTau181.M8,Merged.M6,PlasmaAB140P.M17,Merged.M12,Merged.M4,Merged.M5,PlasmaAB140P.M20,Merged.M8,PlasmaPTau181.M35,Merged.M3,Merged.M26,Merged.M13,Merged.M10,PlasmaPTau181.M18,Merged.M14,Merged.M19,Merged.M16,PlasmaPTau181.M26,Merged.M29,Merged.M24,PlasmaPTau181.M13,PlasmaPTau181.M47,Merged.M25,PlasmaAB140P.M35,PlasmaPTau181.M46,Merged.M20,Merged.M32,Merged.M22,Merged.M15,Merged.M21,Merged.M18,PlasmaPTau181.M5,PlasmaAB140P.M15,Merged.M27,PlasmaAB140P.M40,Merged.M17,PlasmaNfL.M3,PlasmaAB140P.M18,PlasmaPTau181.M30,PlasmaGFAP.M12" \
   -n "dataProt_SS-205063.baseline_WSS.all_WSS" \
-  -g "WSS_mod" \
   -r "../module_scores/STRING.INT.WSS.terms.csv" \
   -w 5 \
   --height 5 \
@@ -146,6 +145,65 @@ Rscript 05-EWCE_heatmap.R  \
 Rscript 05-EWCE_heatmap.R  \
   -i "Merged.M1,Merged.M11,Merged.M7,Merged.M9,Merged.M2,PlasmaPTau181.M8,Merged.M6,PlasmaAB140P.M17,Merged.M12,Merged.M4,Merged.M5,PlasmaAB140P.M20,Merged.M8,PlasmaPTau181.M35,Merged.M3,Merged.M26,Merged.M13,Merged.M10,PlasmaPTau181.M18,Merged.M14,Merged.M19,Merged.M16,PlasmaPTau181.M26,Merged.M29,Merged.M24,PlasmaPTau181.M13,PlasmaPTau181.M47,Merged.M25,PlasmaAB140P.M35,PlasmaPTau181.M46,Merged.M20,Merged.M32,Merged.M22,Merged.M15,Merged.M21,Merged.M18,PlasmaPTau181.M5,PlasmaAB140P.M15,Merged.M27,PlasmaAB140P.M40,Merged.M17,PlasmaNfL.M3,PlasmaAB140P.M18,PlasmaPTau181.M30,PlasmaGFAP.M12" \
   -n "dataProt_SS-205063.baseline_WSS.all_WSS" \
+  -l 2 \
+  -r "../module_scores/STRING.INT.WSS.terms.csv" \
+  -w 6.5 \
+  --height 7 \
+  -c "SEA-AD.Neighborhood" 
+
+
+# Could look at the WSS_prot associations with the original 03 script ----------
+Rscript 03-EWCE_enrichment.R  \
+  -i "Merged.M13,Merged.M8,Merged.M27,Merged.M5,Merged.M2,Merged.M29,Merged.M1,Merged.M32,Merged.M15,Merged.M18,Merged.M21,Merged.M14" \
+  --inpath "../WSS_predict" \
+  -n "dataProt_SS-205063.follow-up" \
+  -s "actual_WSS" \
+  -t 1
+
+# Plot heatmaps
+Rscript 05-EWCE_heatmap.R  \
+  -i "Merged.M13,Merged.M8,Merged.M27,Merged.M5,Merged.M2,Merged.M29,Merged.M1,Merged.M32,Merged.M15,Merged.M18,Merged.M21,Merged.M14" \
+  -n "dataProt_SS-205063.follow-up.actual_WSS" \
+  -r "../module_scores/STRING.INT.WSS.terms.csv" \
+  -w 5 \
+  --height 5 \
+  -c "Sharma_etal.cultured" 
+
+Rscript 05-EWCE_heatmap.R  \
+  -i "Merged.M13,Merged.M8,Merged.M27,Merged.M5,Merged.M2,Merged.M29,Merged.M1,Merged.M32,Merged.M15,Merged.M18,Merged.M21,Merged.M14" \
+  -n "dataProt_SS-205063.follow-up.actual_WSS" \
+  -l 2 \
+  -r "../module_scores/STRING.INT.WSS.terms.csv" \
+  -w 6.5 \
+  --height 7 \
+  -c "SEA-AD.Neighborhood" 
+
+
+
+
+
+
+
+Rscript 03-EWCE_enrichment.R  \
+  -i "Merged.M13.pred,Merged.M8.pred,Merged.M27.pred,Merged.M5.pred,Merged.M2.pred,Merged.M29.pred,Merged.M1.pred,Merged.M32.pred,Merged.M15.pred,Merged.M18.pred,Merged.M21.pred,Merged.M14.pred" \
+  --inpath "../WSS_predict" \
+  -n "dataProt_SS-205063.follow-up" \
+  -s "predicted_WSS" \
+  -t 1
+
+# Plot heatmaps
+Rscript 05-EWCE_heatmap.R  \
+  -i "Merged.M13.pred,Merged.M8.pred,Merged.M27.pred,Merged.M5.pred,Merged.M2.pred,Merged.M29.pred,Merged.M1.pred,Merged.M32.pred,Merged.M15.pred,Merged.M18.pred,Merged.M21.pred,Merged.M14.pred" \
+  -n "dataProt_SS-205063.follow-up.predicted_WSS" \
+  -g "WSS_mod" \
+  -r "../module_scores/STRING.INT.WSS.terms.csv" \
+  -w 5 \
+  --height 5 \
+  -c "Sharma_etal.cultured" 
+
+Rscript 05-EWCE_heatmap.R  \
+  -i "Merged.M13.pred,Merged.M8.pred,Merged.M27.pred,Merged.M5.pred,Merged.M2.pred,Merged.M29.pred,Merged.M1.pred,Merged.M32.pred,Merged.M15.pred,Merged.M18.pred,Merged.M21.pred,Merged.M14.pred" \
+  -n "dataProt_SS-205063.follow-up.predicted_WSS" \
   -g "WSS_mod" \
   -l 2 \
   -r "../module_scores/STRING.INT.WSS.terms.csv" \

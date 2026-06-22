@@ -75,11 +75,11 @@ names=(
   # -n "dataProt_SS-205063.baseline_WSS.Merged.M3"
   # -p "cohens_d"
 
-parallel -j 1 Rscript 03-Protein_QC.R \
+parallel -j 18 Rscript 03-Protein_QC.R \
   -i "WSS_prot/{}/GNPC.baseline_prot.{}.linreg_glm.csv.gz" \
   -o "WSS_prot/{}" \
   -n "GNPC.baseline_prot.{}" \
-  ::: "${names[1]}" 
+  ::: "${names[@]}" 
 
 # 06-TREAT-AD_GSEA.R ---------------------------------------
 # be sure to have a functioning synapse client
@@ -90,14 +90,26 @@ parallel -j 1 Rscript 03-Protein_QC.R \
   # -p "cohens_d"
 
 # conda activate synpase
-parallel -j 1 Rscript 06-TREAT-AD_GSEA.R   \
+parallel -j 5 Rscript 06-TREAT-AD_GSEA.R   \
   -i "WSS_prot/{}/GNPC.baseline_prot.{}.csv"  \
   -o "WSS_prot/{}" \
   -n "GNPC.baseline_prot.{}" \
-  -k "SYMBOL"
+  -k "SYMBOL" \
   ::: "${names[@]}" 
 
 
+mapfile -t missing < <(for dir in WSS_prot/*/; do
+  if ! ls "$dir"*.GSEA_Biodomain.rds 1>/dev/null 2>&1; then
+    basename "$dir"
+  fi
+done)
+
+parallel -j 5 Rscript 06-TREAT-AD_GSEA.R   \
+  -i "WSS_prot/{}/GNPC.baseline_prot.{}.csv"  \
+  -o "WSS_prot/{}" \
+  -n "GNPC.baseline_prot.{}" \
+  -k "SYMBOL" \
+  ::: "${missing[@]}" 
 
 
 

@@ -643,6 +643,12 @@ if (binomial) {
   dat[, (scale_cov) := lapply(.SD, function(x) scale(x)[,1]), .SDcols = scale_cov]
   cols <- c("beta", "se", "z stat", "pval", "nobs", "flag")
 } else {
+  # scale covariates 
+  if (length(scale_cov > 0)) {
+    dat[, (scale_cov) := lapply(.SD, function(x) scale(x)[,1]), .SDcols = scale_cov]
+  }
+  # baseline model
+  cols <- c("beta", "se", "z stat", "pval", "nobs", "flag")
   m0 <- relmatLmer(
     as.formula(paste(outcome, "~", paste(c(covs, "(1|PIDN)"), collapse = " + "))),
     data = dat,

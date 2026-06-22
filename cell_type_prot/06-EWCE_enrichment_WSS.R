@@ -52,7 +52,7 @@ option_list <- list(
     c("--inpath"),
     type = "character",
     default = "../module_scores/STRING_merged_scaled_scores.csv",
-    help = "WSS modules file to use"
+    help = "WSS modules file to use [default: %default]"
   ),
   make_option(
     c("-o", "--output"),

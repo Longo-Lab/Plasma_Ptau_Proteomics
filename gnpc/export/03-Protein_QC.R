@@ -317,11 +317,11 @@ my_volcano <- function(x, titl = NULL, sub = NULL, thresh = 0.05, lfc = 0, lfc_c
   # Main volcano plot
   p1 <- EnhancedVolcano(x_main,
     x = lfc_col,
-    y = "pval",
-    lab = x_main[["Target"]],
+    y = "padj",
+    lab = x_main[["GENE"]],
     xlim = c(min(x_main[[lfc_col]], na.rm = TRUE) * 1.1, max(x_main[[lfc_col]], na.rm = TRUE) * 1.1),
-    ylim = c(0, max(-log10(x_main[["pval"]]), na.rm = TRUE) * 1.25),
-    selectLab = x_main[abs(get(lfc_col)) > lfc & padj < thresh, Target],
+    ylim = c(0, max(-log10(x_main[["padj"]]), na.rm = TRUE) * 1.25),
+    selectLab = x_main[abs(get(lfc_col)) > lfc & padj < thresh, GENE],
     labFace = "bold",
     drawConnectors = TRUE,
     widthConnectors = 0.25,
@@ -371,7 +371,7 @@ my_volcano <- function(x, titl = NULL, sub = NULL, thresh = 0.05, lfc = 0, lfc_c
   p2 <- ggplot(x_separated, aes(x = .data[[lfc_col]], y = y_jitter)) +
     geom_point(aes(color = color), size = 2, alpha = 0.7) +
     geom_text_repel(
-      aes(label = Target),
+      aes(label = GENE),
       size = 3,
       max.overlaps = 20,
       box.padding = 0.3,

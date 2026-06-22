@@ -80,8 +80,14 @@ option_list <- list(
   make_option(
     c("--preds"),
     type = "character",
-    default = "prediction_models/STRING_WSS/joinet/INT/Biomarkers_Age_Sex.csv",
+    default = "prediction_models/STRING_WSS/all_model/model_info/joinet/INT/Biomarkers_Age_Sex.csv",
     help = "File path to predicted eigengenes csv [default: %default]"
+  ),
+  make_option(
+    c("--clin"),
+    action = 'store_true',
+    default = FALSE,
+    help = "Running clinical phenotypes as outcome, not prots? [default: %default]"
   ),
   make_option(
     c("-m", "--pcs"),
@@ -112,6 +118,7 @@ fields <- c(
   "covs",
   "eigengenes",
   "preds",
+  "clin",
   "pcs",
   "outcome",
   "nameset"
@@ -252,30 +259,40 @@ project_svs <- function(prot_train, prot_all, svobj) {
 
 # Main -----------------------
 # So, the final INTnorm dataset:
-a <- fread(input)
+a <- fread(input, colClasses = c(PIDN = "character"))
 
-# Map in PCs assumes your primary data table exists 
-if (pcs != "") {
-  print(sprintf("Reading PCs for inclusion from %s", pcs))
-  x <- fread(pcs, colClasses = c(PIDN = "character"))
-  a <- merge(a, x, by = "PIDN")
-  covs <- unique(c(covs, names(a)[names(a) %like% "^PC\\d{1,2}$"])) # flexible for PCs
+if (!clin) {
+  # Map in PCs assumes your primary data table exists 
+  if (pcs != "") {
+    print(sprintf("Reading PCs for inclusion from %s", pcs))
+    x <- fread(pcs, colClasses = c(PIDN = "character"))
+    a <- merge(a, x, by = "PIDN")
+    covs <- unique(c(covs, names(a)[names(a) %like% "^PC\\d{1,2}$"])) # flexible for PCs
+  }
+
+  # Load eigengenes
+  x <- fread(eigengenes)
+  a <- merge(a, x, by = "SampleID")
 }
 
-# Load eigengenes
-x <- fread(eigengenes)
-a <- merge(a, x, by = "SampleID")
-
-# Load eigengenes
+# Load predicted
 x <- fread(preds)
 names(x)[-1] <- paste0(names(x)[-1], ".pred")
 a <- merge(a, x, by = "SampleID")
 
 # shield improper outcome
-setnames(a, 
-  old = c(orig_outcome, paste0(orig_outcome, ".pred")), 
-  new = c(outcome, paste0(outcome, ".pred"))
-)
+if (clin) {
+  setnames(a, 
+    old = c(orig_outcome), 
+    new = c(outcome)
+  )
+} else {
+  setnames(a, 
+    old = c(orig_outcome, paste0(orig_outcome, ".pred")), 
+    new = c(outcome, paste0(outcome, ".pred"))
+  )
+}
+a = a[!is.na(get(outcome))]
 # cols = c(qc_cols, covs)
 
 # Follow-up visits & normalization -----------------------
@@ -283,11 +300,16 @@ a <- a[DS1V > 0]
 # a$Visit <- factor(a$Visit, levels = sort(unique(a$Visit)), ordered = TRUE)
 
 # Inverse rank normalization (INT) to z-scale
-a[, (prots) := lapply(.SD, RankNorm), .SDcols=prots]
-
+if (!clin) {
+  a[, (prots) := lapply(.SD, RankNorm), .SDcols=prots]
+}
 
 # generate surrogate variables ---------------------------------------
 print("Generating surrogate variables...")
+print(sprintf("Covs: %s", paste(covs, collapse = ", ")))
+print(sprintf("Prots: %s...", paste(head(prots), collapse = ", ")))
+print(sprintf("Outcome: %s", outcome))
+
 # drop multiple visits per person (for reduced model complexity)
 x <- a[order(DS1V)][, .SD[1], by = PIDN]
 
@@ -302,6 +324,15 @@ prot_all <- data.frame(a[, ..cols], row.names = "SampleID")
 cols <- c("SampleID", outcome, covs)
 pheno <- data.frame(x[, ..cols], row.names = "SampleID")
 all(rownames(prot) == rownames(pheno))
+
+# Remove columns with only 1 unique value
+pheno_filtered <- pheno[, sapply(pheno, function(x) length(unique(x)) > 1)]
+print(
+  sprintf("These covs were dropped for sv calculation as univariate: %s", 
+    paste(setdiff(names(pheno), names(pheno_filtered)), collapse = ", ")
+  )
+)
+pheno <- pheno_filtered
 
 # defining models with static set of 6 SVs
 mod <- model.matrix( # this will include all covs and the outcome
@@ -341,6 +372,15 @@ cols <- c("SampleID", outcome, covs)
 # drop missing values for feature importance testing
 pheno <- data.frame(a[order(DS1V)][, .SD[1], by = PIDN][, ..cols], row.names = "SampleID")
 pheno <- pheno[complete.cases(pheno),] 
+
+# Remove columns with only 1 unique value
+pheno_filtered <- pheno[, sapply(pheno, function(x) length(unique(x)) > 1)]
+print(
+  sprintf("These covs were dropped for feature importance calculation as univariate: %s", 
+    paste(setdiff(names(pheno), names(pheno_filtered)), collapse = ", ")
+  )
+)
+pheno <- pheno_filtered
 
 # setup for phenos
 # # Standardize: mean=0, sd=1
@@ -507,12 +547,22 @@ dev.off()
 
 # Post-covariate determination ----------------------------------------------
 # shield improper outcome
-setnames(a, 
-  old = c(outcome, paste0(outcome, ".pred")),
-  new = c(orig_outcome, paste0(orig_outcome, ".pred")) 
-)
+if (clin) {
+  setnames(a, 
+    old = c(outcome),
+    new = c(orig_outcome) 
+  )
 
-cols = c(qc_cols, covs, orig_outcome, paste0(orig_outcome, ".pred"), prots)
+  cols = c(qc_cols, covs, orig_outcome, prots)
+} else {
+  setnames(a, 
+    old = c(outcome, paste0(outcome, ".pred")),
+    new = c(orig_outcome, paste0(orig_outcome, ".pred")) 
+  )
+
+  cols = c(qc_cols, covs, orig_outcome, paste0(orig_outcome, ".pred"), prots)
+}
+
 fwrite(
   a[, ..cols], 
   file = file.path(output, paste(nameset, "INTnorm.csv.gz", sep="."))

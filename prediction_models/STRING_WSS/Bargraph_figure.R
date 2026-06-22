@@ -9,8 +9,8 @@ library(ggsci)
 
 # ---- USER SETTINGS ----------------------------------------------------------
 
-csv_dir <- "C:/Users/audweber/Box/plasma_ptau_proteomics/prediction_models/STRING_WSS/all_model/WSS_CSVs"    # <-- folder containing your CSVs
-out_dir  <- "C:/Users/audweber/Box/plasma_ptau_proteomics/prediction_models/STRING_WSS/all_model"   # <-- folder to save the plot
+csv_dir <- "all_model/WSS_CSVs"    # <-- folder containing your CSVs
+out_dir  <- "all_model"   # <-- folder to save the plot
 
 # ---- MODEL NAME MAPPING (filename stem -> display name) ---------------------
 # Edit the right-hand side if your filenames differ
@@ -34,9 +34,9 @@ variant_levels <- c(
 
 variant_labels <- c(
   "ALL"                           = "All",
-  "Age_Sex_HybridNormControl_PCs" = "Age + Sex + PCs",
-  "Age_Sex_HybridNormControl"     = "HybridNormControl\n+ Age + Sex",
-  "Biomarkers_Age_Sex"            = "Age + Sex",
+  "Age_Sex_HybridNormControl_PCs" = "Age + Gender + PCs",
+  "Age_Sex_HybridNormControl"     = "HybridNormControl\n+ Gender + Sex",
+  "Biomarkers_Age_Sex"            = "Age + Gender",
   "Biomarkers_Only"               = "Biomarkers Only"
 )
 
@@ -72,7 +72,8 @@ df_plot <- df_all |>
     variant = factor(variant_labels[variant],
                      levels = unname(variant_labels)),
     model   = factor(model, levels = model_order)
-  )
+  ) |>
+  separate(col = C_index, into = c("c.index", NA), sep = " ± ", convert = TRUE, remove = FALSE)
 
 # ---- COLOURS ----------------------------------------------------------------
 
@@ -120,7 +121,7 @@ make_metric_plot <- function(data, metric, title, subtitle = NULL, y_label,
       geom      = "crossbar",
       position  = dodge,
       width     = 0.65,
-      linewidth = 1.0,
+      linewidth = 2.0,
       fatten    = 0,
       colour    = "grey15",
       fill      = NA
@@ -174,9 +175,9 @@ p_rmse <- make_metric_plot(
   y_limits  = c(0, 1.5),
   y_breaks  = seq(0, 1.5, by = 0.5)
 )
-ggsave(file.path(out_dir, "plot_RMSE.png"), plot = p_rmse,
-       width = 11, height = 6, dpi = 200)
-message("Saved: plot_RMSE.png")
+ggsave(file.path(out_dir, "plot_RMSE.pdf"), plot = p_rmse,
+       width = 11, height = 6, device = cairo_pdf)
+message("Saved: plot_RMSE.pdf")
 
 # MAE (lower = better, auto range)
 p_mae <- make_metric_plot(
@@ -187,9 +188,9 @@ p_mae <- make_metric_plot(
   y_label   = "MAE",
   y_limits  = c(0, max(df_plot$MAE, na.rm = TRUE) * 1.05)
 )
-ggsave(file.path(out_dir, "plot_MAE.png"), plot = p_mae,
-       width = 11, height = 6, dpi = 200)
-message("Saved: plot_MAE.png")
+ggsave(file.path(out_dir, "plot_MAE.pdf"), plot = p_mae,
+       width = 11, height = 6, device = cairo_pdf)
+message("Saved: plot_MAE.pdf")
 
 # R² (higher = better, auto-scaled to data)
 r2_max <- ceiling(max(df_plot$R2, na.rm = TRUE) * 10) / 10  # round up to nearest 0.1
@@ -202,8 +203,37 @@ p_r2 <- make_metric_plot(
   y_limits  = c(0, r2_max),
   y_breaks  = seq(0, r2_max, by = 0.1)
 )
-ggsave(file.path(out_dir, "plot_R2.png"), plot = p_r2,
-       width = 11, height = 6, dpi = 200)
-message("Saved: plot_R2.png")
+ggsave(file.path(out_dir, "plot_R2.pdf"), plot = p_r2,
+       width = 11, height = 4, device = cairo_pdf)
+message("Saved: plot_R2.pdf")
+
+# C-index (higher = better, auto-scaled to data)
+c_max <- ceiling(max(df_plot$c.index, na.rm = TRUE) * 10) / 10  # round up to nearest 0.1
+p_c <- make_metric_plot(
+  data      = df_plot,
+  metric    = "c.index",
+  title     = "Concordance index by Covariate Set and Model",
+  subtitle  = "Each dot = one module",
+  y_label   = "C-index",
+  y_limits  = c(0.5, c_max),
+  y_breaks  = seq(0, c_max, by = 0.1)
+)
+ggsave(file.path(out_dir, "plot_c-index.pdf"), plot = p_c,
+       width = 11, height = 4, device = cairo_pdf)
+message("Saved: plot_c-index.pdf")
+
+# C-index subset (higher = better, auto-scaled to data)
+p_c_small <- make_metric_plot(
+  data      = df_plot |> filter(variant %in% c("All", "Age + Gender")),
+  metric    = "c.index",
+  title     = "Concordance index by Covariate Set and Model",
+  subtitle  = "Each dot = one module",
+  y_label   = "C-index",
+  y_limits  = c(0.5, c_max),
+  y_breaks  = seq(0, c_max, by = 0.1)
+)
+ggsave(file.path(out_dir, "plot_c-index_small.pdf"), plot = p_c_small,
+       width = 6, height = 4, device = cairo_pdf)
+message("Saved: plot_c-index_small.pdf")
 
 message("\nAll done! Plots saved to: ", normalizePath(out_dir))

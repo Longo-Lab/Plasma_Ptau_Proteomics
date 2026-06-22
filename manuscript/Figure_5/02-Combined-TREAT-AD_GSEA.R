@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 #' ---------------------------
 #'
-#' Script name: 03-Combined-TREAT-AD_GSEA.R
+#' Script name: 02-Combined-TREAT-AD_GSEA.R
 #'
 #' Version: 0.0.1
 #'
@@ -338,31 +338,3 @@ draw(p, heatmap_legend_side = "bottom")
 dev.off()
 
 
-# Possibly focus on sub-domains ---------------------------------------
-
-
-# Driver domains/proteins ---------------------------------------------
-if (!ref %like% "biomarker_names.txt") {
-  p1 <- gt(
-    unique(
-      result_dt[Module == "Merged.M8" 
-        & !BioDomain %in% c("none", "Immune Response [IR]") 
-        & padj < 0.05
-      ][order(-NES)][1:13, .(ID, Description, BioDomain, NES)]
-    )
-  ) |> 
-    tab_header(title = md("**Merged.M8 - Synaptic vesicle|SNARE complex**")) |>
-    cols_align(
-      align = "right",
-      columns = c(BioDomain, NES)
-    )
-
-  ggsave(
-    plot = wrap_table(p1), 
-    file = file.path(output, 
-      paste(nameset, suffix, "BioDomain_Top_Terms.png", sep = ".")
-    ),
-    width = 10,
-    height = 4
-  )
-}

@@ -218,19 +218,19 @@ lapply(gene_sets, function(i){
 })
 
 # Sharma et al 2017 proteomic celltypes data ----------
-load(file.path(ref, "Sharma_etal.EWCE.human.rda"))
+# load(file.path(ref, "Sharma_etal.EWCE.human.rda"))
 
-# run them all in a loop at both levels
-lapply(gene_sets, function(i) {
-  plot_ewce(
-    x = ctd, 
-    gene_sets = get(i), 
-    set_name = i, 
-    ref_name = "Sharma_etal.cultured", 
-    annot = 1,
-    spec = "human"
-  )
-})
+# # run them all in a loop at both levels
+# lapply(gene_sets, function(i) {
+  # plot_ewce(
+    # x = ctd, 
+    # gene_sets = get(i), 
+    # set_name = i, 
+    # ref_name = "Sharma_etal.cultured", 
+    # annot = 1,
+    # spec = "human"
+  # )
+# })
 
 
 # # Allen Inst SEA-AD data --------------
@@ -254,18 +254,29 @@ lapply(gene_sets, function(i) {
 # get overall downsampled SCE converted to ctd format
 load(file.path(ref, "ewce_SEA-AD.Neighborhood.1kDS.rda"))
 
+# # run them all in a loop at both levels
+# lapply(gene_sets, function(i) {
+  # lapply(seq(2), function(j) {
+    # plot_ewce(
+      # x = ctd, 
+      # gene_sets = get(i), 
+      # set_name = i, 
+      # ref_name = "SEA-AD.Neighborhood", 
+      # annot = j, 
+      # spec = "human"
+    # )
+  # })
+# })
 # run them all in a loop at both levels
 lapply(gene_sets, function(i) {
-  lapply(seq(2), function(j) {
-    plot_ewce(
-      x = ctd, 
-      gene_sets = get(i), 
-      set_name = i, 
-      ref_name = "SEA-AD.Neighborhood", 
-      annot = j, 
-      spec = "human"
-    )
-  })
+  plot_ewce(
+    x = ctd, 
+    gene_sets = get(i), 
+    set_name = i, 
+    ref_name = "SEA-AD.Neighborhood", 
+    annot = 2, 
+    spec = "human"
+  )
 })
 
 # # get GABA downsampled
