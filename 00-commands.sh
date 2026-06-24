@@ -21,6 +21,8 @@
 # requires GNU parallel or further modification for batch cluster submission
 # run with R v4.4.1
 
+
+###################### Baseline cohort no genetics ############################
 # biomarker names to be tested
 names=(
   "PlasmaPTau181"
@@ -129,7 +131,7 @@ parallel -j 8 Rscript 03-Protein_QC.R \
 
 
 
-# baseline PCs -----------------------------------------------------------------
+###################### Baseline cohort with PCs ############################
 # same covs to generate svs and add in PCs  
 # covariates to be included, biomarker ratios do not include HybControlNormScale
 covs=(
@@ -222,7 +224,7 @@ parallel -j 8 Rscript 03-Protein_QC.R \
 
 
 
-# baseline PCs -----------------------------------------------------------------
+###################### Baseline cohort PCs + GRM ############################
 # same covs, svs and PCs, but we are adding a relatedness matrix and running lme4qtl
 
 # 02-linreg_lme4qtl.R ------------------------------------------
@@ -269,9 +271,9 @@ parallel -j 8 Rscript 03-Protein_QC.R \
   ::: "${apoe[@]}"
 
 
-# Looks like relatedness works well
+# Looks like relatedness works well!
 
-
+###################### Pathways, Celltypes, Enrichments ########################
 # 04-TREAT-AD_correlation.R --------------------------------
 # Rscript 04-TREAT-AD_correlation.R \
 #   -i "PlasmaAB140P/dataProt_SS-205063.PlasmaAB140P.csv"  \
@@ -340,71 +342,10 @@ parallel -j 8 Rscript 07-Sharma_etal_correlation.R   \
   ::: "${names[@]}" \
   ::: "${apoe[@]}"
 
-# # 08-Cell-type_scoring.R -----------------------------
-# # Sharma_etal cell type scores
-# Rscript 08-Cell-type_scoring.R \
-  # -i "PlasmaGFAP,PlasmaNfL,PlasmaPTau181,PlasmapTau217,PlasmaAB140P,PlasmaAB142P,PlasmaABRatio,PlasmapTau217_AB42Ratio" \
-  # -n "dataProt_SS-205063.Sharma.lvl1" \
-  # --plot \
-  # -o "module_scores/test"
-# # Processing 906 samples across 2277 proteins and 4 cell types
 
-# # SEA-AD.Neighborhood.1kDS.human.lvl2 cell type scores
-# Rscript 08-Cell-type_scoring.R \
-  # -i "PlasmaGFAP,PlasmaNfL,PlasmaPTau181,PlasmapTau217,PlasmaAB140P,PlasmaAB142P,PlasmaABRatio,PlasmapTau217_AB42Ratio" \
-  # -n "dataProt_SS-205063.SEA-AD.Neighborhood.1kDS.lvl2" \
-  # --plot \
-  # -r "cell_type_prot/ewce_SEA-AD.Neighborhood.1kDS.human.lvl2.spec_matr.txt"
-# # Processing 906 samples across 4950 proteins and 9 cell types
+###################### STRING Modules ######################################
 
-# # TREAT-AD biodomain scores
-# Rscript 08-Cell-type_scoring.R \
-  # -i "PlasmaGFAP,PlasmaNfL,PlasmaPTau181,PlasmapTau217,PlasmaAB140P,PlasmaAB142P,PlasmaABRatio,PlasmapTau217_AB42Ratio" \
-  # -n "dataProt_SS-205063.treatad_BioDomain" \
-  # --plot \
-  # -r "treat-ad/treatad_BioDomain.spec_matr.txt"
-# # Processing 906 samples across 2088 proteins and 16 cell types
-
-# scores=('harmonic_norm' 'harmonic_scaled' 'harmonic_spec' 'closeness_norm' 'alpha_scaled' 'alpha_spec' 'ranksum_scaled' 'ranksum_spec')
-# for s in ${scores[*]}; do
-  # Rscript 08-Cell-type_scoring.R \
-    # -i "PlasmaGFAP,PlasmaNfL,PlasmaPTau181,PlasmapTau217,PlasmaAB140P,PlasmaAB142P,PlasmaABRatio,PlasmapTau217_AB42Ratio" \
-    # -n "dataProt_SS-205063.treatad_${s}" \
-    # --plot \
-    # -r "treat-ad/treatad_${s}.spec_matr.txt"
-# done
-
-
-
-# # 08a-Score_extraction.R ------------------------------
-# # Sharma_etal cell type scores
-# Rscript 08a-Score_extraction.R \
-  # -n "dataProt_SS-205063.Sharma.lvl1" \
-  # -s "normalized_scores,enrichment_scores,fdr_values"
-
-# Rscript 08a-Score_extraction.R \
-  # -i "module_scores/test" \
-  # -o "module_scores/test" \
-  # -n "dataProt_SS-205063.Sharma.lvl1" \
-  # -s "normalized_scores,enrichment_scores,fdr"
-
-# # SEA-AD.Neighborhood cell type scores
-# Rscript 08a-Score_extraction.R \
-  # -n "dataProt_SS-205063.SEA-AD.Neighborhood.1kDS.lvl2" \
-  # -s "normalized_scores,enrichment_scores,fdr"
-
-# # TREAT-AD biodomain scores
-# Rscript 08a-Score_extraction.R \
-  # -n "dataProt_SS-205063.treatad_BioDomain" \
-  # -s "normalized_scores,enrichment_scores,fdr"
-
-# for s in ${scores[*]}; do
-  # Rscript 08a-Score_extraction.R \
-    # -n "dataProt_SS-205063.treatad_${s}" \
-    # -s "normalized_scores,enrichment_scores,fdr,thresholds_used,leading_edge"
-# done
-
-# 08b-String_module_construction.R ----------------------
+# 08-String_module_construction.R ----------------------
 Rscript 08-String_module_construction.R \
   -i "PlasmaGFAP,PlasmaNfL,PlasmaPTau181,PlasmapTau217,PlasmaAB140P,PlasmaAB142P,PlasmaABRatio,PlasmapTau217_AB42Ratio" \
   -n "dataProt_SS-205063.STRING" \
@@ -412,28 +353,6 @@ Rscript 08-String_module_construction.R \
 
 Rscript 08a-String_module_testing.R
 
-# # STRING module scores (eigengene approach)
-# Rscript 08-Cell-type_scoring.R \
-  # -i "PlasmaGFAP,PlasmaNfL,PlasmaPTau181,PlasmapTau217,PlasmaAB140P,PlasmaAB142P,PlasmaABRatio,PlasmapTau217_AB42Ratio" \
-  # -n "dataProt_SS-205063.STRING_alpha_scaled" \
-  # --plot \
-  # -r "module_scores/STRING_alpha_scaled.spec_matr.txt"
-# # Processing 906 samples across 6323 proteins and 27 cell types
-
-# # STRING module scores
-# Rscript 08a-Score_extraction.R \
-  # -n "dataProt_SS-205063.STRING_alpha_scaled" \
-  # -s "normalized_scores,enrichment_scores,fdr"
-
-# # 09-Eigengene_construction.R ----------------------------
-# Rscript 09-Eigengene_construction.R \
-  # -i "module_scores/STRING_merged_scaled_scores.csv" \
-  # -n "dataProt_SS-205063.STRING" 
-
-# Rscript 09-Eigengene_construction.R \
-  # -i "module_scores/STRING_merged_scaled_scores.csv" \
-  # -n "dataProt_SS-205063.STRING" \
-  # --INT
 
 # 09-WSS_construction.R ----------------------------
 Rscript 09-WSS_construction.R \
@@ -441,30 +360,13 @@ Rscript 09-WSS_construction.R \
   -n "dataProt_SS-205063.STRING" \
   --INT
 
-# # celltype eigengenes
-# Rscript 09a-Celltype_eigengene_prep.R \
-  # -i "PlasmaGFAP,PlasmaNfL,PlasmaPTau181,PlasmapTau217,PlasmaAB140P,PlasmaAB142P,PlasmaABRatio,PlasmapTau217_AB42Ratio" \
-  # -n "Sharma_etal"
-
-# Rscript 09a-Celltype_eigengene_prep.R \
-  # -i "PlasmaGFAP,PlasmaNfL,PlasmaPTau181,PlasmapTau217,PlasmaAB140P,PlasmaAB142P,PlasmaABRatio,PlasmapTau217_AB42Ratio" \
-  # -n "SEA-AD.Neighborhood" \
-  # -s "cell_type_prot/ewce_SEA-AD.Neighborhood.1kDS.human.lvl2.spec_matr.txt"
-
-# parallel Rscript 09-Eigengene_construction.R \
-  # -i "cell_type_prot/{1}_{2}_quant_scores.csv" \
-  # -n "dataProt_SS-205063.{1}_{2}" \
-  # --INT \
-  # ::: "Sharma_etal" "SEA-AD.Neighborhood" \
-  # ::: "0.5" "0.6" "0.7" "0.8" "0.9"
-
 
 # 10-Eigengene_clustering.Rmd ----------------------------
 # Run interactively
 
 
-###################### WSS modules analysis ###############################
 
+###################### WSS modules clin analysis ###############################
 # 12-sample_QC_WSS_clin.R ------------------------------
 # Now just run WSS x clin analyses on well conserved WSS modules
 
@@ -584,7 +486,7 @@ parallel -j 1 Rscript 02-linreg_lme4qtl.R \
   :::+ "${covs[@]}"  
 
 
-# WSS_x_prot ------------------------------
+###################### WSS modules prot analysis ###############################
 # should just run with the default association scripts
 names=(
   "Merged.M1" 
@@ -703,9 +605,7 @@ parallel -j 1 Rscript 06-TREAT-AD_GSEA.R   \
 
 
 
-###################### Follow-up cohort predictions ############################
-
-
+###################### Follow-up cohort prot predictions #######################
 # 13-sample_QC_prediction.R --------------------------------
 # module names to be tested (all R2 > 0.25)
 names=(
@@ -809,7 +709,7 @@ parallel -j 1 Rscript 06-TREAT-AD_GSEA.R   \
 
 
 
-
+###################### Follow-up cohort clin predictions #######################
 # Continuous variables -----------------------
 names=(
   "MoCA"
@@ -892,54 +792,89 @@ parallel -j 1 Rscript 02-linreg_lme4qtl.R \
   :::+ "${covs[@]}"  
 
 
-
-###################### GNPC backup analysis ############################
+# Binary variables -----------------------
 names=(
-  "Merged.M1" 
-  "Merged.M11" 
-  "Merged.M7" 
-  "Merged.M9" 
-  "Merged.M2" 
-  "PlasmaPTau181.M8" 
-  "Merged.M6" 
-  "PlasmaAB140P.M17" 
-  "Merged.M12" 
-  "Merged.M4" 
-  "Merged.M5" 
-  "PlasmaAB140P.M20" 
-  "Merged.M8" 
-  "PlasmaPTau181.M35" 
-  "Merged.M3" 
-  "Merged.M26" 
-  "Merged.M13" 
-  "Merged.M10" 
-  "PlasmaPTau181.M18" 
-  "Merged.M14" 
-  "Merged.M19" 
-  "Merged.M16" 
-  "PlasmaPTau181.M26" 
-  "Merged.M29" 
-  "Merged.M24" 
-  "PlasmaPTau181.M13" 
-  "PlasmaPTau181.M47" 
-  "Merged.M25" 
-  "PlasmaAB140P.M35" 
-  "PlasmaPTau181.M46" 
-  "Merged.M20" 
-  "Merged.M32" 
-  "Merged.M22" 
-  "Merged.M15" 
-  "Merged.M21" 
-  "Merged.M18" 
-  "PlasmaPTau181.M5" 
-  "PlasmaAB140P.M15" 
-  "Merged.M27" 
-  "PlasmaAB140P.M40" 
-  "Merged.M17" 
-  "PlasmaNfL.M3" 
-  "PlasmaAB140P.M18" 
-  "PlasmaPTau181.M30" 
-  "PlasmaGFAP.M12"
+  "Diagnosis_bin"
 )
+
+# QC and surrogates
+parallel -j 1 Rscript 13-sample_QC_prediction.R \
+  -i "dataProt_SS-205063.follow-up_clin.csv" \
+  -p "WSS_names.txt" \
+  --clin \
+  -o "WSS_clin_actual/{}" \
+  -v "Age,Gender,Storage_days,Subarray,Fed.Fasted,HybControlNormScale,Storage,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8" \
+  -c {} \
+  -n "dataProt_SS-205063.follow-up_clin_binary.{}" \
+  --binomial \
+  ::: "${names[@]}" 
+
+# 02 - lme4qtl ------
+# covariates to be included, biomarker ratios do not include HybControlNormScale
+covs=(
+  'Age,Gender,Storage_days,Subarray,Fed.Fasted,HybControlNormScale,sv1,sv2,PC1,PC3,PC5,PC6,PC7,PC8'
+)
+# Subarray for SomaLogic run as covariates in cases where it showed up in the top 
+#   half of feature importance for 01-sample_QC.R 
+recodes=(
+  'Subarray,B'
+)
+
+parallel -j 1 Rscript 02-linreg_lme4qtl.R \
+  -i "WSS_clin_actual/{1}/dataProt_SS-205063.follow-up_clin_binary.{1}.INTnorm.csv.gz" \
+  -o "WSS_clin_actual/{1}"   \
+  --prots "WSS_names.txt" \
+  -v {3} \
+  -d {2} \
+  -s 'Age,Storage_days' \
+  -c "{1}" \
+  -t 18 \
+  -n "dataProt_SS-205063.follow-up_clin_binary.{1}" \
+  --binomial \
+  -f "0,1" \
+  ::: "${names[@]}" \
+  :::+ "${recodes[@]}"  \
+  :::+ "${covs[@]}"  
+
+
+# QC and surrogates
+parallel -j 1 Rscript 13-sample_QC_prediction.R \
+  -i "dataProt_SS-205063.follow-up_clin.csv" \
+  -p "WSS_names_pred.txt" \
+  --clin \
+  -o "WSS_clin_predict/{}" \
+  -v "Age,Gender,Storage_days,Subarray,Fed.Fasted,HybControlNormScale,Storage,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8" \
+  -c {} \
+  -n "dataProt_SS-205063.follow-up_clin_binary.{}" \
+  --binomial \
+  ::: "${names[@]}" 
+
+# covariates to be included, biomarker ratios do not include HybControlNormScale
+covs=(
+  'Age,Gender,Storage_days,Fed.Fasted,Storage,PC3,PC5,PC7'
+)
+# Subarray for SomaLogic run as covariates in cases where it showed up in the top 
+#   half of feature importance for 01-sample_QC.R 
+recodes=(
+  'Storage,Negative.80C'
+)
+parallel -j 1 Rscript 02-linreg_lme4qtl.R \
+  -i "WSS_clin_predict/{1}/dataProt_SS-205063.follow-up_clin_binary.{1}.INTnorm.csv.gz" \
+  -o "WSS_clin_predict/{1}"   \
+  --prots "WSS_names_pred.txt" \
+  -v {3} \
+  -d {2} \
+  -s 'Age,Storage_days' \
+  -c "{1}" \
+  -t 18 \
+  -n "dataProt_SS-205063.follow-up_clin_binary.{1}" \
+  --binomial \
+  -f "0,1" \
+  --min-sep 1 \
+  ::: "${names[@]}" \
+  :::+ "${recodes[@]}"  \
+  :::+ "${covs[@]}"  
+
+
 
 

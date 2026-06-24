@@ -741,7 +741,7 @@ print(final_plot)
 ```{r compare_predict}
 # setup vars
 # cogs <- c("Diagnosis_bin", "last_diag_bin", "MoCA", "last_MoCA")
-cogs <- c("MoCA", "last_MoCA")
+cogs <- c("MoCA", "Diagnosis_bin")
 test <- c("WSS_clin", "WSS_clin_actual", "WSS_clin_predict")
 names <- c("Baseline", "Follow-up Actual", "Follow-up Predicted")
 
@@ -758,7 +758,12 @@ res <- rbindlist(lapply(cogs, function(j) {
   setattr(x, 'names', names)
   x <- rbindlist(x, idcol = "cohort")
   x[, ix := gsub(".pred", "", ix)]
-}))
+  setnames(x, 
+    old = c("z stat", "t stat"), 
+    new = c("stat", "stat"), 
+    skip_absent = TRUE
+  )
+}), fill = TRUE)
 
 
 # filter to the validation set
@@ -768,7 +773,7 @@ fwrite(res,
 )
 res <- res[ix %in% plot_data[R2 > 0.25 & C.index > 0.65, outcome]]
 
-plot_linreg_corr <- function(res, cog, stat = 't stat') {
+plot_linreg_corr <- function(res, cog, stat = 'stat') {
   # build matrices
   mat <- as.matrix(dcast(res, ix ~ cohort, value.var = stat), rownames = "ix")
   M <- cor(mat, method = "pearson", use = "pairwise.complete.obs")
@@ -788,18 +793,20 @@ plot_linreg_corr <- function(res, cog, stat = 't stat') {
     # number.cex = 0.7,
     addCoef.col = "black",
     number.digits = 3,
-    title = paste(cog, "across cohorts")
+    title = paste(cog, "across cohorts"),
+    mar = c(0, 0, 3, 0)
   )
 }
+# lapply(cogs, function(i) plot_linreg_corr(res[dx == i], i, stat = 'stat'))
 
 CairoPDF(
-  file = file.path("manuscript", "Figure_6", 
-    paste(nameset, "Cognitive_associations.corrplots.pdf", sep = ".")), 
-  width = 6, 
+  file = file.path("manuscript", "Figure_6",
+    paste(nameset, "Cognitive_associations.corrplots.pdf", sep = ".")),
+  width = 6,
   height = 12
 )
-par(mfrow = c(2, 1), mar = c(2, 2, 3, 2))
-lapply(cogs, function(i) plot_linreg_corr(res[dx == i], i))
+par(mfrow = c(2, 1))
+lapply(cogs, function(i) plot_linreg_corr(res[dx == i], i, stat = 'stat'))
 dev.off()
 
 
@@ -810,7 +817,7 @@ dev.off()
 ```{r wss_clin_pred}
 input <- "WSS_clin_predict"
 # cogs <- c("Diagnosis_bin", "last_diag_bin", "MoCA", "last_MoCA")
-cogs <- c("MoCA", "last_MoCA")
+cogs <- c("MoCA", "Diagnosis_bin")
 
 # module preservation data
 # gnpc <- fread("gnpc/validation/ADRCvsGNPC.preservation_summary.csv")

@@ -133,6 +133,12 @@ option_list <- list(
     help = "when binomial == TRUE, what are the levels (ordered) for comparison [default: %default]"
   ),
   make_option(
+    c("--min-sep"),
+    default = 2,
+    dest = "min_sep",
+    help = "when binomial == TRUE, what is the minimum group size for check_separation [default: %default]"
+  ),
+  make_option(
     c("-c", "--outcome"),
     type = "character",
     help = "String specifying the column in data containing the outcome variable [required]"
@@ -175,6 +181,7 @@ fields <- c(
   "threads",
   "binomial",
   "factors",
+  "min_sep",
   "outcome"
 )
 
@@ -256,13 +263,14 @@ recode_dummies <- function(dat, dcol, keep = c()) {
 #' Evaluates whether an exposure variable exhibits quasi-complete or complete
 #' separation with respect to a binary outcome. This is done by creating a
 #' binary split of the exposure at its median and checking if any cell in the
-#' resulting 2x2 contingency table has 2 or fewer observations.
+#' resulting 2x2 contingency table has min_size (default: 2) or fewer observations.
 #'
 #' @param dat Data.table or data.frame containing the data
 #' @param outcome String specifying the column name of the binary outcome variable
 #' @param exposure String specifying the column name of the exposure variable
+#' @param min_size String specifying the minimum cell count for separation
 #'
-#' @return Logical. TRUE if quasi-complete separation is detected (min cell count <= 2),
+#' @return Logical. TRUE if quasi-complete separation is detected (min cell count <= min_size),
 #'   FALSE otherwise
 #'
 #' @details
@@ -271,7 +279,7 @@ recode_dummies <- function(dat, dcol, keep = c()) {
 #' models to fail to converge as coefficient estimates approach infinity.
 #' 
 #' The function uses a median split of the exposure variable as a simple heuristic.
-#' A minimum cell count of 2 or fewer in the 2x2 table is used as the threshold
+#' A minimum cell count of min_size or fewer in the 2x2 table is used as the threshold
 #' for flagging separation issues.
 #'
 #' @examples
@@ -282,12 +290,12 @@ recode_dummies <- function(dat, dcol, keep = c()) {
 #' }
 #'
 #' @export
-check_separation <- function(dat, outcome, exposure) {
+check_separation <- function(dat, outcome, exposure, min_size = min_sep) {
   exposure_binary <- dat[[exposure]] > median(dat[[exposure]], na.rm = TRUE)
   tab <- table(dat[[outcome]], exposure_binary)
   min_cell <- min(tab)
   
-  return(min_cell <= 2)
+  return(min_cell <= min_size)
 }
 
 
