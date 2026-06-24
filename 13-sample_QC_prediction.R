@@ -3,7 +3,7 @@
 ##
 ## Script name: 13-sample_QC_prediction.R
 ##
-## Version: 0.0.1
+## Version: 0.0.2
 ##
 ## Purpose of script: preparing WSS scores for quantile analysis
 ##
@@ -23,6 +23,7 @@
 ##
 ##   REMEMBER, WHEN COMMENTING IN CODE, DO NOT REFERENCE INDIVIDUAL INFORMATION:
 ##   SAMPLES/PIDNS, DATES OR ANY INDIVIDUAL LEVEL INFO
+##   v0.0.2 - adding in binomial as an outcome
 ##
 ## ---------------------------
 
@@ -101,6 +102,17 @@ option_list <- list(
     help = "String specifying the column in data containing the outcome variable [required]"     
   ),
   make_option(
+    c("-b", "--binomial"),
+    action = "store_true",
+    default = FALSE,
+    help = "Use binomial family for logistic regression [default: %default]"
+  ),
+  make_option(
+    c("-f", "--factors"),
+    default = "0,1",
+    help = "when binomial == TRUE, what are the levels (ordered) for comparison [default: %default]"
+  ),
+  make_option(
     c("-n", "--nameset"),
     type = "character",
     help = "Name of project [default: Nameset of input]"
@@ -121,6 +133,8 @@ fields <- c(
   "clin",
   "pcs",
   "outcome",
+  "binomial",
+  "factors",
   "nameset"
 )
 
@@ -152,6 +166,8 @@ covs <- strsplit(covs,",")[[1]]
 prots <- readLines(prots)
 orig_outcome <- outcome
 outcome <- make.names(outcome)
+factors <- strsplit(factors, ",")[[1]]
+
 # first_prot = prots[1]                                             
 # last_prot = prots[length(prots)]
 
@@ -383,9 +399,9 @@ print(
 pheno <- pheno_filtered
 
 # setup for phenos
-# # Standardize: mean=0, sd=1
-# pheno$Age <- scale(pheno$Age)[,1]
-# pheno$Storage_days <- scale(pheno$Storage_days)[,1]
+if (binomial) {
+  pheno[[outcome]] <- factor(pheno[[outcome]], levels = factors, labels = c("CTRL", "CASE"))
+}
 
 # formula
 fmla <- reformulate(".", response = outcome)
@@ -394,7 +410,8 @@ n_features <- ncol(pheno) - 1
 
 # include all possible main effects
 model = glm(fmla, 
-  data = pheno 
+  data = pheno,
+  family = if (binomial) binomial() else gaussian()
 ) 
 
 # simple training
@@ -403,6 +420,7 @@ cv_model <- train(
   form = fmla, 
   data = pheno, 
   method = "glm",
+  family = if (binomial) binomial() else gaussian(),
   trControl = trainControl(method = "cv", number = 5)
 )
 
@@ -417,13 +435,28 @@ cv_model <- train(
 # model_pls = mvr(outcome ~ ., data=b, ncomp=npcs) 
 
 set.seed(123)
+# Conditional trControl based on outcome type
+if (binomial) {
+  tc <- trainControl(
+    method = "cv", 
+    number = 5,
+    classProbs = TRUE,
+    summaryFunction = twoClassSummary
+  )
+  metric_to_use <- "ROC"
+} else {
+  tc <- trainControl(method = "cv", number = 5)
+  metric_to_use <- "RMSE"
+}
+
 cv_model_pls <- train(
   fmla, 
   data = pheno, 
-  method = "pls",
-  trControl = trainControl(method = "cv", number = 10),
+  method = "simpls",
+  trControl = tc,
   preProcess = c("zv", "center", "scale"),
-  tuneLength = 100
+  tuneLength = 15,
+  metric = metric_to_use
 )
 
 # model with lowest RMSE

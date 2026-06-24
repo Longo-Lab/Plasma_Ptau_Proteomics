@@ -706,7 +706,7 @@ parallel -j 1 Rscript 06-TREAT-AD_GSEA.R   \
 ###################### Follow-up cohort predictions ############################
 
 
-# 13-sample_QC_eigengene.R --------------------------------
+# 13-sample_QC_prediction.R --------------------------------
 # module names to be tested (all R2 > 0.25)
 names=(
   "Merged.M13"
@@ -813,13 +813,11 @@ parallel -j 1 Rscript 06-TREAT-AD_GSEA.R   \
 # Continuous variables -----------------------
 names=(
   "MoCA"
-  "CDRSUM"
   "last_MoCA"
-  "last_CDRSUM"
 )
 
 # QC and surrogates
-parallel -j 4 Rscript 13-sample_QC_prediction.R \
+parallel -j 2 Rscript 13-sample_QC_prediction.R \
   -i "dataProt_SS-205063.follow-up_clin.csv" \
   -p "WSS_names.txt" \
   --clin \
@@ -833,17 +831,13 @@ parallel -j 4 Rscript 13-sample_QC_prediction.R \
 # covariates to be included, biomarker ratios do not include HybControlNormScale
 covs=(
   'Age,Gender,Storage_days,Subarray,Fed.Fasted,HybControlNormScale,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6'
-  'Age,Gender,Storage_days,Subarray,Fed.Fasted,HybControlNormScale,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC5,PC6'
   'Age,Gender,Storage_days,Subarray,HybControlNormScale,Storage,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6,PC7'
-  'Age,Gender,Storage_days,Subarray,Fed.Fasted,HybControlNormScale,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6'
 )
 # Subarray for SomaLogic run as covariates in cases where it showed up in the top 
 #   half of feature importance for 01-sample_QC.R 
 recodes=(
   'Subarray,B,E,H'
-  'Subarray,D,G,C,A,H,B,E'
   'Subarray,B,E,H'
-  'Subarray,D,G,C,A,H,B,E'
 )
 
 parallel -j 1 Rscript 02-linreg_lme4qtl.R \
@@ -872,6 +866,17 @@ parallel -j 4 Rscript 13-sample_QC_prediction.R \
   -n "dataProt_SS-205063.follow-up_clin_continuous.{}" \
   ::: "${names[@]}" 
 
+# covariates to be included, biomarker ratios do not include HybControlNormScale
+covs=(
+  'Age,Gender,Storage_days,Subarray,HybControlNormScale,Storage,sv1,sv2,sv3,sv4,PC1,PC2,PC3,PC5,PC6'
+  'Age,Gender,Fed.Fasted,Storage,sv1,sv2,sv3,sv4,PC1,PC2,PC5,PC6,PC8'
+)
+# Subarray for SomaLogic run as covariates in cases where it showed up in the top 
+#   half of feature importance for 01-sample_QC.R 
+recodes=(
+  'Subarray,E'
+  ''
+)
 parallel -j 1 Rscript 02-linreg_lme4qtl.R \
   -i "WSS_clin_predict/{1}/dataProt_SS-205063.follow-up_clin_continuous.{1}.INTnorm.csv.gz" \
   -o "WSS_clin_predict/{1}"   \

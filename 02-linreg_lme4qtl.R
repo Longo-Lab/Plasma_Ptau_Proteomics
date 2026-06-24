@@ -567,7 +567,7 @@ analyze_biomarker <- function(dat, outcome, exposure) {
 
 # Main -------------------------
 flog.info("=== Setting up for analysis ===")
-dat <- fread(input)
+dat <- fread(input, colClasses = c(PIDN = "character"))
 names(dat) <- make.names(names(dat))
 names(prots) <- make.names(prots)
 # similar to other name shielding, but reversed for ease of use

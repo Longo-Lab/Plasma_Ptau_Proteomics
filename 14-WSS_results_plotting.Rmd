@@ -16,6 +16,7 @@ output:
 library(data.table)
 library(ggplot2)
 library(ggrepel)
+library(ggplotify)
 library(RColorBrewer)
 library(ComplexHeatmap)
 library(ggpubr)
@@ -28,6 +29,8 @@ library(MASS)
 library(GENESIS)
 library(lme4qtl)
 library(ordinal)
+library(corrplot)
+library(patchwork)
 
 # suppress messages
 knitr::opts_chunk$set(warning = FALSE, message = FALSE)
@@ -456,6 +459,9 @@ plot_heatmap_with_sig <- function(dt,
 #'     \item module: Module identifier (matches 'ix' in result files)
 #'     \item term: Module term/description
 #'   }
+#' @param is.pred Logical of whether or not the data is predicted values, and
+#'   the module names are appended with ".pred". Will be removed for merging 
+#'   with sum_dt. Default is FALSE
 #'
 #' @return A data.table with combined results containing:
 #'   \itemize{
@@ -484,7 +490,7 @@ plot_heatmap_with_sig <- function(dt,
 #'   sum_dt = module_terms
 #' )
 #' }
-combine_glm_results <- function(input, cogs, sum_dt) {
+combine_glm_results <- function(input, cogs, sum_dt, is.pred = FALSE) {
   
   # Read individual cognitive test results
   dat <- lapply(cogs, function(i) {
@@ -523,6 +529,9 @@ combine_glm_results <- function(input, cogs, sum_dt) {
   
   # Add -log10 transformed p-values
   dat[, LogP := -log10(pval)]
+  
+  # remove .pred suffix
+  if (is.pred) dat[, ix := gsub(".pred", "", ix)]
   
   # Merge with module terms
   dat <- merge(dat, sum_dt[, .(module, term)], by.x = "ix", by.y = "module")
@@ -628,7 +637,7 @@ ggsave(
 
 
 
-# summary preservation scores plot
+# Summary preservation scores plot
 ```{r sum_preserv}
 
 
@@ -646,6 +655,7 @@ p <- ggplot(gnpc,
     # legend.position = 'none'
   )
 
+# p
 ggsave(
   plot = p,
   filename = file.path("manuscript", "Figure_4",
@@ -656,6 +666,189 @@ ggsave(
 
 
 ```
+
+# Predictions in the follow-up cohort
+## Plot model stats
+```{r plotPredvalidation}
+library(ggrepel)
+
+glm_cv <- fread("prediction_models/STRING_WSS/all_model/model_info/joinet/INT/joinet_model_metrics_c_index_STRING_WSS_INT.csv")
+# glm_cv[, outcome := gsub("\\.", "\\-", outcome)]
+glm_cv <- merge(glm_cv, scores, by.x = 'outcome', by.y = 'name')
+glm_cv[, c("C.index", "C.SE") := lapply(tstrsplit(C_index, " ± "), as.numeric)]
+
+# pres_stat <- fread("")
+top_pres <- gnpc[order(Biomarker, -mean.Zsum)][mean.Zsum > 2 & (is.mod + is.str >= 7)]
+
+# Clean and prepare data
+plot_data <- glm_cv[
+  !outcome %like% "grey" 
+  & variant == "Biomarkers_Age_Sex"
+  & outcome %in% top_pres$module
+]
+setnames(plot_data, old = c("group"), new = c("Biomarker"))
+
+# Check for any remaining issues
+cat("Data rows:", nrow(plot_data), "\n")
+cat("r2_oof range:", range(plot_data$R2), "\n")
+cat("aoc_rroc range:", range(plot_data$C.index), "\n")
+
+
+# Create the plot with better handling
+final_plot <- ggplot(plot_data, aes(x = R2, y = C.index, color = Biomarker, size = )) +
+  geom_point(size = 3, alpha = 0.7) +
+  geom_text_repel(
+    aes(label = term),
+    size = 2.5,
+    max.overlaps = 25,
+    box.padding = 0.3,
+    point.padding = 0.3,
+    max.iter = 100000,
+    segment.color = "grey50",
+    segment.size = 0.3
+  ) +
+  scale_color_brewer(palette = "Dark2") +
+  labs(
+    title = "Module score prediction performance on hold out set",
+    subtitle = "Joinet multivariate elastic net, n = 259",
+    x = "Model fit (R²)",
+    y = "Concordance-index",
+    color = "Biomarker Type"
+  ) +
+  theme_classic() +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 8),
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+ggsave(final_plot, 
+  filename = file.path("manuscript", "Figure_6", 
+    paste(nameset, "prediction_performance.pdf", sep = ".")
+  ),
+  width = 5,
+  height = 5
+)
+print(final_plot)
+
+```
+
+
+
+## compare cognitive metric associations
+```{r compare_predict}
+# setup vars
+# cogs <- c("Diagnosis_bin", "last_diag_bin", "MoCA", "last_MoCA")
+cogs <- c("MoCA", "last_MoCA")
+test <- c("WSS_clin", "WSS_clin_actual", "WSS_clin_predict")
+names <- c("Baseline", "Follow-up Actual", "Follow-up Predicted")
+
+# grab files
+res <- rbindlist(lapply(cogs, function(j) {
+  fh <- lapply(test, function(i){
+    list.files(
+      path = file.path(i, j), 
+      pattern = paste0("*", j, ".lme4qtl.csv.gz"),
+      full.names = TRUE
+    )
+  })
+  x <- lapply(fh, fread)
+  setattr(x, 'names', names)
+  x <- rbindlist(x, idcol = "cohort")
+  x[, ix := gsub(".pred", "", ix)]
+}))
+
+
+# filter to the validation set
+fwrite(res, 
+  file = file.path("manuscript", "Figure_6", 
+    paste(nameset, "Cognitive_associations.big_tbl.csv", sep = "."))
+)
+res <- res[ix %in% plot_data[R2 > 0.25 & C.index > 0.65, outcome]]
+
+plot_linreg_corr <- function(res, cog, stat = 't stat') {
+  # build matrices
+  mat <- as.matrix(dcast(res, ix ~ cohort, value.var = stat), rownames = "ix")
+  M <- cor(mat, method = "pearson", use = "pairwise.complete.obs")
+  P <- cor.mtest(mat, method = "pearson")
+  
+  # Replace upper triangle of M with p-values
+  M_display <- M
+  M_display[lower.tri(M_display)] <- P$p[lower.tri(P$p)]
+  
+  corrplot.mixed(M_display, 
+    lower = 'number',
+    upper = 'square',
+    upper.col = COL2('BrBG'),
+    lower.col = "black",
+    tl.pos = "lt",
+    tl.col = "black", 
+    # number.cex = 0.7,
+    addCoef.col = "black",
+    number.digits = 3,
+    title = paste(cog, "across cohorts")
+  )
+}
+
+CairoPDF(
+  file = file.path("manuscript", "Figure_6", 
+    paste(nameset, "Cognitive_associations.corrplots.pdf", sep = ".")), 
+  width = 6, 
+  height = 12
+)
+par(mfrow = c(2, 1), mar = c(2, 2, 3, 2))
+lapply(cogs, function(i) plot_linreg_corr(res[dx == i], i))
+dev.off()
+
+
+
+```
+
+## Prediction based association heatmap cog type
+```{r wss_clin_pred}
+input <- "WSS_clin_predict"
+# cogs <- c("Diagnosis_bin", "last_diag_bin", "MoCA", "last_MoCA")
+cogs <- c("MoCA", "last_MoCA")
+
+# module preservation data
+# gnpc <- fread("gnpc/validation/ADRCvsGNPC.preservation_summary.csv")
+# gnpc[, Biomarker := tstrsplit(module, "\\.", keep = 1)]
+# gnpc[, Biomarker := factor(Biomarker, 
+#   levels = c("Merged", "PlasmaAB140P", "PlasmaAB142P", "PlasmaGFAP", 
+#              "PlasmaNfL", "PlasmaPTau181", "PlasmapTau217")
+# )]
+
+# read in data
+dat <- combine_glm_results(input, cogs, gnpc, is.pred = TRUE)
+
+# plot
+p <- plot_heatmap_with_sig(
+  dt = dat,
+  row_var = "term",
+  col_var = "dx",
+  value_var = "LogP",
+  row_order = rev(gnpc[mean.Zsum > 2 & (is.mod + is.str >= 7), term]),
+  col_order = cogs
+)
+p
+
+# ggsave( 
+#   filename = file.path("manuscript", "Figure_6",
+#     paste(nameset, "Cognitive_associations.predicted_follow-up.pdf", sep = ".")
+#   ),
+#   plot = p,
+#   device = cairo_pdf,
+#   width = 5.5,
+#   height = 10
+# )
+
+
+```
+
+
+
 
 
 # session
