@@ -1,49 +1,51 @@
 #!/usr/bin/env Rscript
-## ---------------------------
-##
-## Script name: 02-linreg_glm.R
-##
-## Version: 0.0.3
-##
-## Purpose of script: calculate correlation of plasma ptau with SomaLogic plasma
-## proteomic levels
-##
-## Author: Edward Wilson, Robert B Butler III, Michael P Brown
-##
-## Date Created: 2023-08-25
-##
-## Copyright (c) 2023
-## Email: rrbutler@stanford.edu
-##
-## ---------------------------
-##
-## Notes:
-##   Linear regression glm for baseline visit only with corrections 
-##   for fixed effects: filter covariates based on importance
-##   
-##   PlateRunDate & ScannerID couldn't be fit to the model, suggesting some 
-##   other issue, so dropping those
-##   
-##   This takes a while, so batch unless you like waiting
-##   Usage:
-##     sbatch -J ptau --mem=12G -c 16 -t 06:00:00 -p interactive \
-##       -o %A_02-linreg_lme4.log \
-##       --wrap "ml R/4.2.2; Rscript 02-linreg_glm.R"
-##
-##   REMEMBER, WHEN COMMENTING IN CODE, DO NOT REFERENCE INDIVIDUAL INFORMATION:
-##   SAMPLES/PIDNS, DATES OR ANY INDIVIDUAL LEVEL INFO
-##
-## ---------------------------
+#' ---------------------------
+#'
+#' Script name: 02-linreg_glm.R
+#'
+#' Version: 0.0.4
+#'
+#' Purpose of script: calculate correlation of plasma ptau with SomaLogic plasma
+#' proteomic levels
+#'
+#' Author: Edward Wilson, Robert B Butler III, Michael P Brown
+#'
+#' Date Created: 2023-08-25
+#'
+#' Copyright (c) 2023
+#' Email: rrbutler@stanford.edu
+#'
+#' ---------------------------
+#'
+#' Notes:
+#'   v0.0.4 - adding threads, bugfix recodes, shielding outcome variable
+#'   Linear regression glm for baseline visit only with corrections 
+#'   for fixed effects: filter covariates based on importance
+#'   
+#'   PlateRunDate & ScannerID couldn't be fit to the model, suggesting some 
+#'   other issue, so dropping those
+#'   
+#'   This takes a while, so batch unless you like waiting
+#'   Usage:
+#'     sbatch -J ptau --mem=12G -c 16 -t 06:00:00 -p interactive \
+#'       -o %A_02-linreg_lme4.log \
+#'       --wrap "ml R/4.2.2; Rscript 02-linreg_glm.R"
+#'
+#'   REMEMBER, WHEN COMMENTING IN CODE, DO NOT REFERENCE INDIVIDUAL INFORMATION:
+#'   SAMPLES/PIDNS, DATES OR ANY INDIVIDUAL LEVEL INFO
+#'
+#' ---------------------------
 
-## load up the packages we will need:  (uncomment as required)
-library(tictoc)
-tic()
-library(data.table)
-library(optparse)
-library(tools)
-library(stringr)
-# library(lmerTest) # loads lme4
-setDTthreads(percent=75)
+# load up the packages we will need:  (uncomment as required)
+suppressPackageStartupMessages({
+  library(tictoc)
+  tic()
+  library(data.table)
+  library(optparse)
+  library(tools)
+  library(stringr)
+  # library(lmerTest) # loads lme4
+})
 
 # Nameset helper function
 nameset_default <- function(input){
@@ -88,6 +90,11 @@ option_list <- list(
     help = "Name of project [default: Nameset of input]"
   ),
   make_option(
+    c("-t", "--threads"),
+    default = 0,
+    help = "number of threads [default: setDTthreads]"
+  ),
+  make_option(
     c("-c", "--outcome"),
     type = "character",
     help = "String specifying the column in data containing the outcome variable [required]"     
@@ -116,6 +123,7 @@ fields <- c(
   "covs",
   "recodes",
   "nameset",
+  "threads",
   "outcome"
 )
 
@@ -131,6 +139,9 @@ for (field in fields) {
   assign(field, args_list[[field]])
   print(paste0(field, ": ", get(field)))
 }
+
+# handle threading
+setDTthreads(threads = threads)
 
 # variables
 covs <- strsplit(covs, ",")[[1]]
@@ -184,24 +195,30 @@ recode_dummies = function(dat, dcol, keep=c()){
 dat = fread(input)
 names(dat) = make.names(names(dat))
 names(prots) <- make.names(prots)
+# similar to other name shielding, but reversed for ease of use
+orig_outcome <- outcome
+outcome <- make.names(outcome)
 
 # add in single category columns with feature importance
 # PlateId was important, but P0028449, P0028565, P0028437, P0028430, P0028452, P0028448 were top30 in either glmcross-validated or plr estimates
 # dat = recode_dummies(dat, "PlateId", keep=c("P0028449", "P0028565", "P0028437", "P0028430", "P0028452", "P0028448"))
-lapply(recodes, function(i){
-  if(i[1] %in% covs){
-    dat <- recode_dummies(dat, 
-    dcol = i[1],
-    keep = i[2:length(i)]
-    )
+if(length(recodes) > 0) {
+  new_covs <- c()
+  for(recode_item in recodes) {
+    if(recode_item[1] %in% covs) {
+      dat <- recode_dummies(dat, 
+        dcol = recode_item[1],
+        keep = recode_item[2:length(recode_item)]
+      )
+      new_covs <- c(new_covs, paste(recode_item[1], recode_item[2:length(recode_item)], sep = "."))
+      covs <- covs[covs != recode_item[1]]
+    } else {
+      print(sprintf("%s not found in input, dropping & skipping recode...", recode_item[1]))
+      covs <- covs[covs != recode_item[1]]
+    }
   }
-})
-
-# # Subarray was not very important, but three showed up in top 30 for GLM CV
-# dat = recode_dummies(dat, "Subarray", keep=c("G", "F", "H"))
-# Storage did not show up in Rf top30, but "Negative.20C.LowVolume" came up in both GLM CV and PLS
-# dat = recode_dummies(dat, "Storage", keep=c("Negative.20C.LowVolume"))
-
+  covs <- c(covs, new_covs)
+}
 
 # list covariates
 print(paste("Running covs:", paste(covs, collapse=", ")))
@@ -214,8 +231,11 @@ dt1[, c("beta", "se", "t stat", "pval", "nobs") := get_linreg(dat, dx, ix, covs)
 
 # remove Xs needed for formula
 dt1$ix <- plyr::mapvalues(x = dt1$ix, from = names(prots), to = prots)
+dt1$dx <- plyr::mapvalues(x = dt1$dx, from = outcome, to = orig_outcome)
 # dt1[startsWith(ix, "X."), ix := gsub("^X.", ".", ix)]
-fwrite(dt1, file=file.path(output, paste(nameset, "linreg_glm", "csv.gz", sep=".")))
+fwrite(dt1, 
+  file = file.path(output, paste(nameset, "linreg_glm", "csv.gz", sep="."))
+)
 
 # cleanup
 toc()

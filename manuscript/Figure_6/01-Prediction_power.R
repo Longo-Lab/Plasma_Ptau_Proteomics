@@ -66,13 +66,13 @@ option_list <- list(
   make_option(
     c("-c", "--corrs"),
     type = "character",
-    default = "../../prediction_models/STRING_WSS/joinet/INT/joinet_model_correlations_STRING_WSS_INT.csv",
+    default = "../../prediction_models/STRING_WSS/all_model/model_info/joinet/INT/joinet_model_correlations_STRING_WSS_INT.csv",
     help = "File path to prediction stats [default: %default]"
   ),
   make_option(
     c("-r", "--ref"),
     type = "character",
-    default = "../../cell_type_prot/STRING.INT.WSS.terms.csv",
+    default = "../../module_scores/STRING.INT.WSS.terms.csv",
     help = "File path to reference terms [default: %default]"
   ),
   make_option(
@@ -142,8 +142,8 @@ get_mcols <- function(str, result, col) {
 
 #' Calculate power comparison metrics (continuous analysis)
 #'
-#' @param res_actual data.table, results from actual eigenprotein
-#' @param res_predicted data.table, results from predicted eigenprotein
+#' @param res_actual data.table, results from actual module score
+#' @param res_predicted data.table, results from predicted module score
 #' @param protein_col Character, protein identifier column. Default: "Symbol"
 #' @param alpha Numeric, significance threshold. Default: 0.05
 #'
@@ -208,8 +208,8 @@ power_metrics_continuous <- function(res_actual, res_predicted,
 
 #' Generate diagnostic plots for power comparison
 #'
-#' @param res_actual data.table, results from actual eigenprotein
-#' @param res_predicted data.table, results from predicted eigenprotein
+#' @param res_actual data.table, results from actual module score
+#' @param res_predicted data.table, results from predicted module score
 #' @param protein_col Character, protein identifier column. Default: "Symbol"
 #' @param alpha Numeric, significance threshold. Default: 0.05
 #' @param title Character, plot title prefix. Default: NULL
@@ -249,8 +249,8 @@ plot_power_comparison <- function(res_actual, res_predicted,
   
   # 1. Beta comparison
   plot(merged$beta_actual, merged$beta_predicted,
-       xlab = "Beta (actual eigenprotein)",
-       ylab = "Beta (predicted eigenprotein)",
+       xlab = "Beta (actual module score)",
+       ylab = "Beta (predicted module score)",
        main = if (!is.null(title)) paste(title, "- Effect sizes") else "Effect sizes",
        pch = 16, col = rgb(0, 0, 0, 0.3), cex = 0.8)
   abline(0, 1, col = "red", lty = 2, lwd = 2)
@@ -294,6 +294,13 @@ plot_power_comparison <- function(res_actual, res_predicted,
   merged[, diff_beta := beta_predicted - beta_actual]
   mean_diff <- mean(merged$diff_beta, na.rm = TRUE)
   sd_diff <- sd(merged$diff_beta, na.rm = TRUE)
+  bias_pct <- (abs(mean_diff) / mean(abs(merged$beta_actual), na.rm = TRUE)) * 100
+
+  # Calculate percentage within LOA
+  loa_lower <- mean_diff - 1.96 * sd_diff
+  loa_upper <- mean_diff + 1.96 * sd_diff
+  merged[, within_loa := diff_beta >= loa_lower & diff_beta <= loa_upper]
+  in_loa <- 100 * mean(merged$within_loa, na.rm = TRUE)
   
   plot(merged$mean_beta, merged$diff_beta,
        xlab = "Mean beta", ylab = "Difference (predicted - actual)",
@@ -301,9 +308,18 @@ plot_power_comparison <- function(res_actual, res_predicted,
        pch = 16, col = rgb(0, 0, 0, 0.3), cex = 0.8)
   abline(h = 0, col = "red", lty = 2, lwd = 2)
   abline(h = mean_diff, col = "blue", lwd = 2)
-  abline(h = mean_diff + 1.96 * sd_diff, col = "blue", lty = 3)
-  abline(h = mean_diff - 1.96 * sd_diff, col = "blue", lty = 3)
-  legend("topleft", sprintf("Bias = %.3f", mean_diff), bty = "n", cex = 0.9)
+  abline(h = loa_upper, col = "blue", lty = 3)
+  abline(h = loa_lower, col = "blue", lty = 3)
+  legend("topleft", 
+    sprintf("Bias = %.3f\nPercent of mean: %.1f%%", mean_diff, bias_pct), 
+    bty = "n", 
+    cex = 0.9
+  )
+  legend("topright", 
+    sprintf("Points in LOA = %.1f%%", in_loa), 
+    bty = "n", 
+    cex = 0.9
+  )
   
   if (!is.null(filename)) {
     dev.off()
@@ -506,7 +522,7 @@ setattr(result_pred, 'names', input)
 # Calculate metrics for all
 power_comparison_results <- lapply(input, function(ep) {
   
-  # Get results for this eigenprotein
+  # Get results for this module score
   # (assuming you have them stored somehow)
   res_actual <- result_act[[ep]]
   res_predicted <- result_pred[[ep]]

@@ -243,7 +243,11 @@ input <- gsub('PTau', 'pTau', input)
 input <- gsub('ABRatio', 'A\u03b242/A\u03b240', input)
 input <- sort(gsub('_AB42Ratio', '/A\u03b242', input))
 
-
+fwrite(result, 
+  file = file.path(output, 
+    paste(nameset, "full_table.csv", sep=".")
+  ), 
+)
 
 # plot colored by beta and t stat
 lapply(c("beta", "t stat"), function(j) {

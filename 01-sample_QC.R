@@ -188,7 +188,10 @@ cols = c(qc_cols, covs)
 if (qc) {
   # check ConnectivityZscore for extreme outliers:
   a[abs(ConnectivityZscore) > 3, ..cols]
-
+  
+  # make dummy SampID
+  a[, SampID := paste0("Samp", .I)]
+  
   # plots connectivity histogram
   p1 = ggplot(a, aes(x=ConnectivityZscore)) + geom_histogram()
   ggsave(
@@ -203,14 +206,14 @@ if (qc) {
   # The rest included some samples with z in the +/- 3-4 range, but not notable
 
   # fetch the protein columns for plotting
-  cols = c("SampleID", prots) 
+  cols = c("SampID", prots) 
   b = a[, ..cols]
 
   # Poisson Distance Pairwise
-  poisd = PoissonDistance(as.matrix(b, rownames="SampleID"))
+  poisd = PoissonDistance(as.matrix(b, rownames="SampID"))
   samplePoisDistMatrix = as.matrix(poisd$dd)
-  rownames(samplePoisDistMatrix) = b[, SampleID]
-  colnames(samplePoisDistMatrix) = b[, SampleID]
+  rownames(samplePoisDistMatrix) = b[, SampID]
+  colnames(samplePoisDistMatrix) = b[, SampID]
 
   # set colors and draw
   colors = colorRampPalette(brewer.pal(11, "RdYlBu"))(255)
@@ -270,9 +273,9 @@ if (qc) {
   # Plot PCAs
   pdf(file=file.path(output, paste(nameset, "pca_plots.pdf", sep=".")), onefile=T, paper="USr", 
       width=11, height=8.5)
-  my_pca_plot(t(as.matrix(b, rownames="SampleID")), c_by="Diagnosis_group", 
+  my_pca_plot(t(as.matrix(b, rownames="SampID")), c_by="Diagnosis_group", 
               c_lab="Diagnosis_group", c_type="disc")
-  my_pca_plot(t(as.matrix(b, rownames="SampleID")), c_by="Diagnosis_group", 
+  my_pca_plot(t(as.matrix(b, rownames="SampID")), c_by="Diagnosis_group", 
               c_lab="Top 500 Diagnosis_group", c_type="disc", num=500)
   dev.off()
 
@@ -280,6 +283,10 @@ if (qc) {
   # drop outlier samples
   drop = a[abs(ConnectivityZscore) > 10, SampleID]
   a = a[!SampleID %in% drop]
+  
+  # drop dummy names
+  a[, SampID := NULL]
+  print("Finished QC...")
 }
 
 # Setup for baseline visit only analysis ---------------------------
@@ -500,7 +507,7 @@ fwrite(
 # a = data.table(SampleID=seq(6), 
                # PIDN=c(rep("A",2),rep("B",3),rep("C",1)), 
                # Visit=c(seq(2), seq(3), 1), 
-               # Date.of.draw=c("3/12/2018", "4/23/2019", "12/28/2016", "2/14/2018", 
+               # Date.of.draw=c("3/12/2018", "4/23/2019", "12/28/2016", "2/14/2018",
                       # "7/3/2019", "4/9/2012"))
 # a[20:30, .(SampleID, PIDN, Visit, Date.of.draw, Visit_Consensus, DS1V)]
 # ---------------------------------------------------------------------------

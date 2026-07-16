@@ -193,7 +193,7 @@ b$ID <- mapvalues(
 )
 
 # check matches in ID and ADRC_ID/Linkcode to make sure they are PIDNs
-# conflicts exist between Poston IDs and PIDNs, for one case. Since none have genetic
+# conflicts exist between Poston IDs and PIDNs for one case. Since none have genetic
 # information or Apoes, can filter out. Future studies with Poston need to
 # verify mapping of 6-digit codes to PIDN
 

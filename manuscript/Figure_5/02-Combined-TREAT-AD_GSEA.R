@@ -162,6 +162,11 @@ result_dt <- lapply(names(result), function(module_name) {
   return(dt)
 })
 result_dt <- rbindlist(result_dt)
+fwrite(result_dt, 
+  file = file.path(output, 
+    paste(nameset, suffix, "BioDomain_Raw_Enrichment.csv", sep = ".")
+  )
+)
 
 # Figure the mean NES * proportion significant -------------------------
 scores <- result_dt[, .(

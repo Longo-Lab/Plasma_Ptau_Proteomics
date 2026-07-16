@@ -56,11 +56,11 @@ covs=(
 # 01-sample_QC.R  ------------------------------------------
 # Rscript 01-sample_QC.R \
   # -i "dataProt_SS-205063.merged.QC.csv" \
-  # -o "baseline_PCs_relatedness/Plasma_pTau217.APOE" \
+  # -o "baseline_PCs_relatedness/PlasmapTau217" \
   # -p "prot_names.txt" \
-  # -v 'Age,Gender,Storage_days,Study,Subarray,Fed.Fasted,PlateId,Storage,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8,APOE'   \
-  # -c "Plasma_pTau217" \
-  # -n "dataProt_SS-205063.PC.Plasma_pTau217.APOE" \
+  # -v 'Age,Gender,Storage_days,Study,Subarray,Fed.Fasted,PlateId,Storage,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8'   \
+  # -c "PlasmapTau217" \
+  # -n "dataProt_SS-205063.PC.PlasmapTau217" \
   # -m "genomic/mypcair.PCs.csv"
 
 # baseline
@@ -121,7 +121,7 @@ parallel -j 8 Rscript 02-linreg_glm.R \
 #   -r "2024-08-30_Somalogic_reference_Key.txt" \
 #   -n "dataProt_SS-205063.PlasmaAB140P"
 
-parallel -j 8 Rscript 03-Protein_QC.R \
+parallel -j 1 Rscript 03-Protein_QC.R \
   -i "baseline/{1}{2}/dataProt_SS-205063.{1}{2}.linreg_glm.csv.gz" \
   -o "baseline/{1}{2}" \
   -r "2024-08-30_Somalogic_reference_Key.txt" \
@@ -214,7 +214,7 @@ parallel -j 8 Rscript 02-linreg_glm.R \
 #   -r "2024-08-30_Somalogic_reference_Key.txt" \
 #   -n "dataProt_SS-205063.PlasmaAB140P"
 
-parallel -j 8 Rscript 03-Protein_QC.R \
+parallel -j 1 Rscript 03-Protein_QC.R \
   -i "baseline_PCs/{1}{2}/dataProt_SS-205063.PC.{1}{2}.linreg_glm.csv.gz" \
   -o "baseline_PCs/{1}{2}" \
   -r "2024-08-30_Somalogic_reference_Key.txt" \
@@ -851,7 +851,7 @@ parallel -j 1 Rscript 13-sample_QC_prediction.R \
 
 # covariates to be included, biomarker ratios do not include HybControlNormScale
 covs=(
-  'Age,Gender,Storage_days,Fed.Fasted,Storage,PC3,PC5,PC7'
+  'Age,Gender,Storage_days,Fed.Fasted,Storage,sv1,PC3,PC5,PC7'
 )
 # Subarray for SomaLogic run as covariates in cases where it showed up in the top 
 #   half of feature importance for 01-sample_QC.R 

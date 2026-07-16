@@ -16,7 +16,7 @@ output:
 library(data.table)
 library(ggplot2)
 library(ggrepel)
-library(ggplotify)
+library(ggridges)
 library(RColorBrewer)
 library(ComplexHeatmap)
 library(ggpubr)
@@ -31,6 +31,7 @@ library(lme4qtl)
 library(ordinal)
 library(corrplot)
 library(patchwork)
+library(extrafont)
 
 # suppress messages
 knitr::opts_chunk$set(warning = FALSE, message = FALSE)
@@ -459,6 +460,8 @@ plot_heatmap_with_sig <- function(dt,
 #'     \item module: Module identifier (matches 'ix' in result files)
 #'     \item term: Module term/description
 #'   }
+#' @param prefix Character prefix of the filenames, used for different cohorts
+#'   Default is the baseline adrc cohort "dataProt_SS-205063"  
 #' @param is.pred Logical of whether or not the data is predicted values, and
 #'   the module names are appended with ".pred". Will be removed for merging 
 #'   with sum_dt. Default is FALSE
@@ -473,7 +476,7 @@ plot_heatmap_with_sig <- function(dt,
 #'   }
 #'
 #' @details 
-#' The function searches for files matching the pattern "GNPC.*\\.{cog}\\.linreg_glm\\.csv\\.gz"
+#' The function searches for files matching the pattern "prefix.*\\.{cog}\\.linreg_glm\\.csv\\.gz"
 #' in subdirectories named after each test. It handles multiple or missing
 #' files with warnings. The statistical column is standardized to 'stat' regardless
 #' of whether it was originally 'z stat' or 't stat'.
@@ -490,12 +493,12 @@ plot_heatmap_with_sig <- function(dt,
 #'   sum_dt = module_terms
 #' )
 #' }
-combine_glm_results <- function(input, cogs, sum_dt, is.pred = FALSE) {
+combine_glm_results <- function(input, cogs, sum_dt, prefix = "dataProt_SS-205063", is.pred = FALSE) {
   
   # Read individual cognitive test results
   dat <- lapply(cogs, function(i) {
     # List files matching the pattern
-    pattern <- paste0("dataProt_SS-205063.*\\.", i, "\\.lme4qtl\\.csv\\.gz$")
+    pattern <- paste0(prefix, ".*\\.", i, "\\.(lme4qtl|linreg_glm)\\.csv\\.gz$")
     file_path <- list.files(
       path = file.path(proj.dir, input, i),
       pattern = pattern,
@@ -545,7 +548,7 @@ combine_glm_results <- function(input, cogs, sum_dt, is.pred = FALSE) {
 ## Load data
 ```{r make_seurat, include=FALSE}
 # module preservation data
-gnpc <- fread("gnpc/validation/ADRCvsGNPC.preservation_summary.csv")
+gnpc <- fread("gnpc/export/validation/ADRCvsGNPC.preservation_summary.csv")
 gnpc[, Biomarker := tstrsplit(module, "\\.", keep = 1)]
 gnpc[, Biomarker := factor(Biomarker, 
   levels = c("Merged", "PlasmaAB140P", "PlasmaAB142P", "PlasmaGFAP", 
@@ -568,13 +571,13 @@ fwrite(scores,
 input <- "WSS_clin"
 cogs <- c("Diagnosis_bin", "last_diag_bin", "MoCA", "last_MoCA")
 
-# module preservation data
-gnpc <- fread("gnpc/validation/ADRCvsGNPC.preservation_summary.csv")
-gnpc[, Biomarker := tstrsplit(module, "\\.", keep = 1)]
-gnpc[, Biomarker := factor(Biomarker, 
-  levels = c("Merged", "PlasmaAB140P", "PlasmaAB142P", "PlasmaGFAP", 
-             "PlasmaNfL", "PlasmaPTau181", "PlasmapTau217")
-)]
+# # module preservation data
+# gnpc <- fread("gnpc/export/validation/ADRCvsGNPC.preservation_summary.csv")
+# gnpc[, Biomarker := tstrsplit(module, "\\.", keep = 1)]
+# gnpc[, Biomarker := factor(Biomarker, 
+#   levels = c("Merged", "PlasmaAB140P", "PlasmaAB142P", "PlasmaGFAP", 
+#              "PlasmaNfL", "PlasmaPTau181", "PlasmapTau217")
+# )]
 
 # read in data
 dat <- combine_glm_results(input, cogs, gnpc)
@@ -602,11 +605,33 @@ ggsave(
 
 ```
 
+## cog type merged table
+```{r make_cog_table}
+input <- "gnpc/export/WSS_clin"
+cogs <- c("diagnosis_bin", "last_diag_bin", "MoCA", "last_MoCA") # whoops, lower case d in diagnosis_bin on GNPC
+
+# read in data
+dat_gnpc <- combine_glm_results(input, cogs, gnpc, prefix = "GNPC")
+
+dat_gnpc <- rbindlist(list("ADRC" = dat, "GNPC" = dat_gnpc), idcol = "Study", fill = TRUE)
+
+# Write to table
+fwrite(dat_gnpc, 
+  file = file.path("manuscript", "Figure_4", 
+    paste("ADRCvsGNPC", "Cognitive_associations.big_tbl.csv", sep = "."))
+)
+
+
+
+```
+
+
+
 ## comorbidity type
 ```{r wss_comorbidity}
 input <- "WSS_clin"
 cogs <- c("ANXIETY", "DEP2YRS", "DIABETES", "HYPERCHO", "HYPERTEN")
-gnpc <- fread("gnpc/validation/ADRCvsGNPC.preservation_summary.csv")
+# gnpc <- fread("gnpc/validation/ADRCvsGNPC.preservation_summary.csv")
 
 # read in data
 dat <- combine_glm_results(input, cogs, gnpc)
@@ -639,8 +664,6 @@ ggsave(
 
 # Summary preservation scores plot
 ```{r sum_preserv}
-
-
 p <- ggplot(gnpc, 
     aes(x = moduleSize, y = mean.Zsum, color = Biomarker, label = term)) +
   geom_point(size = 3) +
@@ -815,8 +838,8 @@ dev.off()
 
 ## Prediction based association heatmap cog type
 ```{r wss_clin_pred}
-input <- "WSS_clin_predict"
-# cogs <- c("Diagnosis_bin", "last_diag_bin", "MoCA", "last_MoCA")
+# input <- "WSS_clin_predict"
+input <- "WSS_clin_actual"
 cogs <- c("MoCA", "Diagnosis_bin")
 
 # module preservation data
@@ -854,7 +877,84 @@ p
 
 ```
 
+## Plotting distributions for paper
+```{r plot_dist_}
+# load data
+dat <- fread("dataProt_SS-205063.follow-up_clin.csv")
+preds <- fread("prediction_models/STRING_WSS/all_model/model_info/joinet/INT/Biomarkers_Age_Sex.csv")
+names(preds)[-1] <- paste0(names(preds)[-1], ".pred")
 
+# merge and simplify
+plot_data <- merge(dat, preds) 
+drops <- names(plot_data)[!names(plot_data) %like% "Samp|d.M8|d.M13|d.M27"]
+plot_data[, (drops) := NULL]
+plot_data <- melt(plot_data, 
+  id.vars = 1, 
+  variable.name = 'module', 
+  value.name = 'score'
+)
+
+# reformat columns for plotting
+plot_data[, type := fcase(
+  module %like% "\\.pred", "Predicted", 
+  default = "Actual"
+)]
+plot_data[, module := gsub(".pred", "", module)]
+plot_data <- merge(plot_data, gnpc[, .(module, term)])
+plot_data[, term := factor(term, levels = unique(plot_data$term)[c(2,3,1)])]
+
+
+# Plotting
+# Assign colors: each term gets a pair of colors
+# Term 1: colors 1,2; Term 2: colors 3,4; Term 3: colors 5,6
+plot_data[, term_n := as.numeric(factor(term))]
+plot_data[, col := paste(term, type, sep = "_")]
+
+# Create color vector for all combinations
+paired_colors <- RColorBrewer::brewer.pal(n = 12, name = "Paired")
+color_map <- setNames(
+  c(paired_colors[2], paired_colors[1],  # Term 1: Actual, Predicted
+    paired_colors[4], paired_colors[3],  # Term 2: Actual, Predicted
+    paired_colors[10], paired_colors[9]), # Term 3: Actual, Predicted
+  sort(unique(plot_data$col))
+)
+
+p1 <- ggplot(plot_data, aes(x = score, y = term, fill = col, color = col)) +
+  geom_density_ridges(alpha = 0.6, scale = 1, linewidth = 1) +
+  scale_color_manual(
+    values = color_map, 
+    breaks = c(names(color_map)[1], names(color_map)[2]),  # Only first pair
+    labels = c("Actual", "Predicted"),
+    guide = guide_legend(override.aes = list(color = c("gray20", "gray70")))
+  ) +
+  scale_fill_manual(
+    values = color_map, 
+    breaks = c(names(color_map)[1], names(color_map)[2]),  # Only first pair
+    labels = c("Actual", "Predicted"),
+    guide = guide_legend(override.aes = list(fill = c("gray20", "gray70")))
+  ) +
+  labs(x = "WSS module score", y = NULL, fill = NULL, color = NULL) +
+  xlim(-1.5, 1.5) +
+  theme_classic() + 
+  theme(
+    text = element_text(face = "bold", family = "Arial"),
+    legend.position = c(0.97, 0.97),
+    legend.justification = c("right", "top"),
+    legend.background = element_blank()
+  )
+
+# p1
+ggsave(
+  filename = file.path("manuscript", "Figure_6", 
+    paste(nameset, "module_dist_joy_plot.pdf", sep = ".")
+  ),
+  plot = p1,
+  height = 5,
+  device = cairo_pdf
+)
+
+
+```
 
 
 

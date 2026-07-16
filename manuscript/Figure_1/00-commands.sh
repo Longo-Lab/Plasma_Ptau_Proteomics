@@ -23,3 +23,12 @@ parallel -j 2 Rscript 03-Long_plots.R  \
   ::: "PlasmaGFAP,PlasmaNfL,PlasmaPTau181,PlasmapTau217,PlasmaAB140P,PlasmaAB142P,PlasmaABRatio,PlasmapTau217_AB42Ratio" \
       "PlasmaGFAP.APOE,PlasmaNfL.APOE,PlasmaPTau181.APOE,PlasmapTau217.APOE,PlasmaAB140P.APOE,PlasmaAB142P.APOE,PlasmaABRatio.APOE,PlasmapTau217_AB42Ratio.APOE" \
   :::+ "${apoe[@]}"
+
+
+# # merging tables for pub
+# # in R
+# library(data.table)
+# fh <- list.files(pattern = ".*full_table.csv")
+# fl <- lapply(rev(fh), fread) # flip so the non-APOE adjusted are first
+# setattr(fl, 'names', c(FALSE, TRUE))
+# fwrite(rbindlist(fl, idcol = "APOE.adjusted"), file = "TableS3.all_bios.assoc.csv")
