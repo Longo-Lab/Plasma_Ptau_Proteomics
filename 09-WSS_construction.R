@@ -3,7 +3,7 @@
 #'
 #' Script name: 09-WSS_construction.R
 #'
-#' Version: 0.0.1
+#' Version: 0.0.2
 #'
 #' Purpose of script: Generate Weighted Sum of Scores for STRING network modules
 #'  
@@ -18,6 +18,7 @@
 #' ---------------------------
 #'
 #' Notes:
+#'   v0.0.2 - initial build
 #'   v0.0.1 - initial build
 #'   
 #'   Based on the initial examination of eigengenes, there is too little variance
@@ -269,6 +270,16 @@ calculate_weighted_module_scores <- function(expr_matrix, result) {
   ))
 }
 
+# Out-of-sample projection matching RNOmni::RankNorm (k = 0.375,
+# ties = "average") exactly for in-sample points; for a new point,
+# treats it as a single insertion into the frozen baseline reference.
+project_rank_norm <- function(train_vals, new_vals, k = 0.375) {
+  n <- length(train_vals)
+  sorted_train <- sort(train_vals)
+  r_new <- findInterval(new_vals, sorted_train) + 1
+  denom <- (n + 1) - 2 * k + 1
+  qnorm((r_new - k) / denom)
+}
 
 
 # Main -----------------------------------------------------------------------
@@ -307,37 +318,23 @@ if (INT) {
   # Baseline is fit in-sample; follow-up is projected onto that frozen
   # baseline reference so no hold-out information leaks into the
   # baseline-derived WSS scores. Cohort membership is taken from the
-  # existing baseline/follow-up clinical roster files (SampleID column
-  # only -- not their module-score columns, which these scores feed
-  # into), not a naive first-visit-per-PIDN rule: the raw merged.QC.csv
+  # existing baseline/follow-up clinical roster files The raw merged.QC.csv
   # includes ~100 additional samples (e.g. non-genotyped/non-ADRC) that
   # the rest of the pipeline excludes from the baseline/follow-up cohorts
-  # via an inner join against the genomic PCs / cohort roster files, so
-  # first-visit-per-PIDN on the full pooled file overcounts both cohorts.
   # See issue #76.
   baseline_roster <- fread("dataProt_SS-205063.baseline_clin.csv", select = "SampleID")$SampleID
   followup_roster <- fread("dataProt_SS-205063.follow-up_clin.csv", select = "SampleID")$SampleID
   baseline_ids <- intersect(baseline_roster, a$SampleID)
   followup_ids <- intersect(followup_roster, a$SampleID)
-
-  # Out-of-sample projection matching RNOmni::RankNorm (k = 0.375,
-  # ties = "average") exactly for in-sample points; for a new point,
-  # treats it as a single insertion into the frozen baseline reference.
-  project_rank_norm <- function(train_vals, new_vals, k = 0.375) {
-    n <- length(train_vals)
-    sorted_train <- sort(train_vals)
-    r_new <- findInterval(new_vals, sorted_train) + 1
-    denom <- (n + 1) - 2 * k + 1
-    qnorm((r_new - k) / denom)
-  }
-
   exp_baseline <- exp[baseline_ids, , drop = FALSE]
   exp_followup <- exp[followup_ids, , drop = FALSE]
+
   for (j in seq_len(ncol(exp))) {
     train_vals <- exp_baseline[, j]
     exp_followup[, j] <- project_rank_norm(train_vals, exp_followup[, j])
     exp_baseline[, j] <- RankNorm(train_vals)
   }
+
   nameset <- paste(nameset, "INT", sep = ".")
 } else {
   # z-scaling
