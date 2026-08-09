@@ -28,6 +28,8 @@
 ## load up the packages we will need:  (uncomment as required)
 library(data.table)
 library(RNOmni)
+library(Hmisc)     # rcorr.cens()/somers2() for C-index -- must load before
+                    # the joinet section's C-index block runs
 library(dplyr)     # for data wrangling
 library(ggplot2)   # for awesome plotting
 library(patchwork)
@@ -851,11 +853,9 @@ saveRDS(predictions, file.path(output, "predictions_glmnet_INT.rds"))
 #   as.numeric(pred_valid),
 #   as.numeric(actual_valid)
 # )
-# 
+#
 # dxy <- as.numeric(som$Dxy)
 # c_index <- (dxy + 1) / 2
-
-library(Hmisc)
 
 metrics <- lapply(names(predictions), function(model_id) {
   pred <- predictions[[model_id]]
