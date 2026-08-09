@@ -54,18 +54,24 @@ library(data.table)
 
 
 # Inputs ----------------
-setwd("C:/Users/audweber/Box/plasma_ptau_proteomics")
-inpath <- "C:/Users/audweber/Box/plasma_ptau_proteomics" # don't repeat things you don't have to
+inpath <- "/mnt/box/Robert Butler's Files/plasma_ptau_proteomics" # don't repeat things you don't have to
+# inpath <- "C:/Users/audweber/Box/plasma_ptau_proteomics" # don't repeat things you don't have to
+setwd(inpath)
 input <- file.path(inpath, "dataProt_SS-205063.merged.QC.csv")
 prots <- file.path(inpath, "prot_names.txt") 
-pcs <- file.path(inpath, "genomic/mypcair.PCs.csv")
-prediction_scores <- file.path(inpath, # wrap at 80 characters
-  "module_scores/dataProt_SS-205063.STRING.INT.WSS.csv")
-output <- 'prediction_models/STRING_WSS/all_model/new'
-covs <- 'Age,Gender,APOE,HybControlNormScale'   
-output <- 'prediction_models/eigengenes/mrf/INT'
-covs <- 'Age,Gender,APOE,HybControlNormScale'   
-outcome <- make.names(setdiff(names(fread(prediction_scores, nrows = 0)), c("SampleID", "Neddylation")), unique = TRUE)
+pcs <- file.path(inpath, "genomic", "mypcair.PCs.csv")
+base_WSS <- file.path(inpath, "module_scores", 
+  "dataProt_SS-205063.STRING.INT.baseline.WSS.csv"
+)
+follow_WSS <- file.path(inpath, "module_scores", 
+  "dataProt_SS-205063.STRING.INT.follow-up.WSS.csv"
+)
+output <- 'prediction_models/STRING_WSS_v2/model_info/joinet'
+covs <- 'Age,Gender,APOE,HybControlNormScale'
+# output <- 'prediction_models/eigengenes/mrf/INT'
+# covs <- 'Age,Gender,APOE,HybControlNormScale'
+if (!dir.exists(output)) dir.create(output, recursive = TRUE)
+outcome <- make.names(names(fread(base_WSS, nrows = 0))[-1])
 feature <- c(
   "PlasmaPTau181", "PlasmaAB142P","PlasmaAB140P","PlasmaABRatio", 
   "PlasmapTau217","PlasmapTau217_AB42Ratio","PlasmaGFAP","PlasmaNfL"
@@ -106,6 +112,19 @@ recode_dummies = function(dat, dcol, keep=c()){
   return(dt)
 }
 
+#' Out-of-sample projection matching RNOmni::RankNorm (k = 0.375,
+#' ties = "average") exactly for in-sample points; for a new point, treats
+#' it as a single insertion into the frozen training reference. Used to
+#' project follow-up biomarker values onto the baseline-fit INT reference
+#' without leaking follow-up information into the baseline normalization.
+project_rank_norm <- function(train_vals, new_vals, k = 0.375) {
+  n <- length(train_vals)
+  sorted_train <- sort(train_vals)
+  r_new <- findInterval(new_vals, sorted_train) + 1
+  denom <- (n + 1) - 2 * k + 1
+  qnorm((r_new - k) / denom)
+}
+
 get_xcols <- function(tag) {
   cat(sprintf("Selecting predictors for variant: %s\n", tag))
   cat(sprintf("Total predictors in pool: %d\n", length(predictor_pool)))
@@ -139,19 +158,19 @@ if (pcs != "") {
   covs <- unique(c(covs, names(a)[names(a) %like% "^PC\\d{1,2}$"])) # flexible for PCs
 }
 
-# Add cell scores
-if (prediction_scores != "") {
-  print(sprintf("Reading Prediction scores for inclusion from %s", prediction_scores))
-  x <- fread(prediction_scores, colClasses = c(SampleID = "character"))
+# Add baseline cohort WSS scores (now from baseline set so no filtering needed)
+if (base_WSS != "") {
+  print(sprintf("Reading Prediction scores for inclusion from %s", base_WSS))
+  x <- fread(base_WSS, colClasses = c(SampleID = "character"))
   a <- merge(a, x, by = "SampleID")
 }
 
-# filter outliars 
-drop = a[abs(ConnectivityZscore) > 10, SampleID]
-a <- a[!SampleID %in% drop][, !"Neddylation", with = FALSE]
+# # filter outliars 
+# drop = a[abs(ConnectivityZscore) > 10, SampleID]
+# a <- a[!SampleID %in% drop][, !"Neddylation", with = FALSE]
 
-#Only keep baseline visits where plasma is avaliable 
-a = a[order(DS1V)][, head(.SD, 1), by = "PIDN"]
+# #Only keep baseline visits where plasma is avaliable 
+# a = a[order(DS1V)][, head(.SD, 1), by = "PIDN"]
 
 # checking for missed duplicates or bad visit labeling
 a[duplicated(PIDN), ..qc_cols]
@@ -169,11 +188,17 @@ cols <- c("SampleID", outcome, covs, feature)
 
 # Setting up data for input 
 pheno <- a[complete.cases(a[, ..cols]), ..cols] # at this point everything is in pheno and is ordered, just keep calling this
-pheno <- `rownames<-`(setDF(copy(a[complete.cases(a[, ..cols]), 
-                      setdiff(cols, "SampleID"), with = FALSE])), 
-                      make.unique(as.character(a[complete.cases(a[, ..cols]), SampleID])))
 
-#Save a copy of pheno for later 
+# INT-normalize biomarkers in-sample on baseline (training); the raw
+# baseline values are kept as the frozen reference for projecting
+# follow-up biomarkers below, so no hold-out information leaks in.
+baseline_feature_ref <- copy(pheno[, ..feature])
+pheno[, (feature) := lapply(.SD, RankNorm), .SDcols = feature]
+
+pheno <- `rownames<-`(setDF(copy(pheno[, setdiff(cols, "SampleID"), with = FALSE])),
+                      make.unique(as.character(pheno$SampleID)))
+
+#Save a copy of pheno for later
 pheno2 <- pheno
 
 
@@ -197,6 +222,7 @@ cores <- detectCores() - 1  # Use all but one core
 cl <- makeCluster(cores)
 registerDoParallel(cl)
 ####################################################JOINET##############################################
+mod <- "joinet"
 #########################################################################################################
 # Export necessary functions and data to the parallel workers
 clusterExport(cl, c("cv.joinet", "joinet", "get_xcols", "pheno2", "outcome", "K_outer", "K_inner"))
@@ -306,9 +332,9 @@ summary_table <- data.table(
   N_Features = sapply(final_models, function(m) length(m$x_cols))
 )
 # 
-# # Save summary table
-# fwrite(summary_table, file.path(output, "final_models_summary.csv"))
-# 
+# Save summary table
+fwrite(summary_table, file.path(output, "final_models_summary.csv"))
+
 print(summary_table)
 
 
@@ -321,40 +347,41 @@ if (pcs != "") {
   print(sprintf("Reading PCs for inclusion from %s", pcs))
   x <- fread(pcs, colClasses = c(PIDN = "character"))
   a <- merge(a, x, by = "PIDN")
-  covs <- c(covs, names(a)[names(a) %like% "^PC\\d{1,2}$"]) # flexible for PCs
+  covs <- unique(c(covs, names(a)[names(a) %like% "^PC\\d{1,2}$"])) # flexible for PCs
 }
 
-# Add cell enrichments
-
-if (prediction_scores != "") {
-  print(sprintf("Reading Prediction scores for inclusion from %s", prediction_scores))
-  x <- fread(prediction_scores, colClasses = c(SampleID = "character"))
+# Add module scores
+if (follow_WSS != "") {
+  print(sprintf("Reading scores for inclusion from %s", follow_WSS))
+  x <- fread(follow_WSS, colClasses = c(SampleID = "character"))
   a <- merge(a, x, by = "SampleID")
 }
 
-
-drop = a[abs(ConnectivityZscore) > 10, SampleID]
-a = a[!SampleID %in% drop]
+# recode gender/APOE for models
 a[, Gender := as.numeric(Gender == "M")]
 recode_dummies(a, "APOE", keep = c("e34", "e44"))
 covs <- unique(c(covs[covs != "APOE"], "APOE.e34", "APOE.e44"))
 
-
-test_data <- a
-
-ids <- test_data [order(DS1V)][, head(.SD, 1), by = "PIDN"][, SampleID]
-f_ups <- test_data[!SampleID %in% ids]
-columns_to_check <- c(  "Age","Gender","HybControlNormScale", "PC1","PC2","PC3","PC4","PC5","PC6","PC7","PC8","APOE.e34","APOE.e44",
-                        "PlasmaPTau181","PlasmaAB142P","PlasmaAB140P","PlasmaABRatio","PlasmapTau217","PlasmapTau217_AB42Ratio",
-                        "PlasmaGFAP","PlasmaNfL")
-drops <- f_ups[!complete.cases(f_ups[, ..columns_to_check ]), SampleID]
-
-test_data <- f_ups[!SampleID %in% drops]
-
+# Handling incomplete cases
+columns_to_check <- c(  
+  "Age","Gender","HybControlNormScale", 
+  "PC1","PC2","PC3","PC4","PC5","PC6","PC7","PC8","APOE.e34","APOE.e44",
+  "PlasmaPTau181","PlasmaAB142P","PlasmaAB140P","PlasmaABRatio","PlasmapTau217",
+  "PlasmapTau217_AB42Ratio", "PlasmaGFAP","PlasmaNfL"
+)
+drops <- a[!complete.cases(a[, ..columns_to_check ]), SampleID]
+test_data <- a[!SampleID %in% drops]
 names(test_data) <- names(name_map <- setNames(names(test_data), make.names(names(test_data), unique = TRUE)))
 
-# Handling incomplete cases
+# Cleanup test data objects
 cols <- c("SampleID", outcome, covs, feature)
+
+# Project follow-up biomarkers onto the frozen baseline INT reference
+# (fit above) rather than re-fitting RankNorm in-sample on follow-up,
+# so held-out values never influence their own normalization.
+for (f in feature) {
+  test_data[[f]] <- project_rank_norm(baseline_feature_ref[[f]], test_data[[f]])
+}
 
 test_data <- data.frame(test_data[, ..cols], row.names = "SampleID")
 
@@ -460,7 +487,7 @@ metrics <- lapply(names(predictions), function(model_id) {
     c_index_result <- tryCatch({
       rcorr.cens(pred_valid, actual_valid)
     }, error = function(e) {
-      c(C = NA, Dxy = NA, S.D. = NA, n = NA)
+      c("C Index" = NA, Dxy = NA, S.D. = NA, n = NA)
     })
     
     c_index <- c_index_result["C Index"]
@@ -529,15 +556,15 @@ for (model_id in names(predictions)) {
   model_info <- final_models[[model_id]]
   
   for (i in seq_along(model_info$outcomes)) {
-    outcome <- model_info$outcomes[i]
+    outcome_i <- model_info$outcomes[i]  # local name -- avoid clobbering the global `outcome` vector
     pred <- pred_matrix[, i]
-    actual <- actual_values[[outcome]]
-    
+    actual <- actual_values[[outcome_i]]
+
     cor_test <- cor.test(pred, actual, method = "pearson", use = "complete.obs")
-    
+
     correlations <- rbind(correlations, data.frame(
       model_id = model_id,
-      outcome = outcome,
+      outcome = outcome_i,
       variant = model_info$variant,
       Pearson_Correlation = cor_test$estimate,
       Correlation_P_Value = cor_test$p.value,
@@ -636,7 +663,8 @@ write.csv(macro_cor_dt, file.path(output, "joinet_macro_correlations_INT.csv"), 
 
 ##GLMNET----------------------------------------------------------------------------
 
-output <- "prediction_models/STRING_WSS/all_model/new/glmnet"
+output <- "prediction_models/STRING_WSS_v2/model_info/glmnet"
+if (!dir.exists(output)) dir.create(output, recursive = TRUE)
 
 alpha_grid <- seq(0, 1, by = 0.2)
 K_outer <- 5
@@ -848,7 +876,7 @@ metrics <- lapply(names(predictions), function(model_id) {
    c_index_result <- tryCatch({
     rcorr.cens(pred_valid, actual_valid)
   }, error = function(e) {
-    c(C = NA, Dxy = NA, S.D. = NA, n = NA)
+    c("C Index" = NA, Dxy = NA, S.D. = NA, n = NA)
   })
   
   c_index <- c_index_result["C Index"]
@@ -903,14 +931,14 @@ correlations <- data.frame()
 for (model_id in names(predictions)) {
   pred <- predictions[[model_id]]
   model_info <- final_models[[model_id]]
-  outcome <- model_info$outcome
-  actual <- actual_values[[outcome]]
-  
+  outcome_i <- model_info$outcome  # local name -- avoid clobbering the global `outcome` vector
+  actual <- actual_values[[outcome_i]]
+
   cor_test <- cor.test(pred, actual, method = "pearson", use = "complete.obs")
-  
+
   correlations <- rbind(correlations, data.frame(
     model_id = model_id,
-    outcome = outcome,
+    outcome = outcome_i,
     variant = model_info$variant,
     Pearson_Correlation = cor_test$estimate,
     Correlation_P_Value = cor_test$p.value,
@@ -1301,7 +1329,8 @@ write.csv(correlations,
 
 #Individudal Random forest
 
-output <- "prediction_models/STRING_WSS/all_model/new/rf"
+output <- "prediction_models/STRING_WSS_v2/model_info/rf"
+if (!dir.exists(output)) dir.create(output, recursive = TRUE)
 
 
 variants <- list(
@@ -1538,13 +1567,13 @@ predictions_by_variant <- list()
 
 for (model_id in names(predictions)) {
   variant <- final_models[[model_id]]$variant
-  outcome <- final_models[[model_id]]$outcome
-  
+  outcome_i <- final_models[[model_id]]$outcome  # local name -- avoid clobbering the global `outcome` vector
+
   if (!variant %in% names(predictions_by_variant)) {
     predictions_by_variant[[variant]] <- list()
   }
-  
-  predictions_by_variant[[variant]][[outcome]] <- predictions[[model_id]][,1]  # Extract vector
+
+  predictions_by_variant[[variant]][[outcome_i]] <- predictions[[model_id]][,1]  # Extract vector
 }
 
 # Convert to data frames and save by variant
@@ -1629,33 +1658,33 @@ for (model_id in names(predictions)) {
   model_info <- final_models[[model_id]]
   
   # RF models have single outcome, not multiple outcomes
-  outcome <- model_info$outcome  # Single outcome (not 'outcomes')
+  outcome_i <- model_info$outcome  # local name -- avoid clobbering the global `outcome` vector
   pred <- pred_matrix[, 1]       # Single column (not multiple columns)
-  
+
   # Get actual values for this outcome
-  if (outcome %in% names(actual_values)) {
-    actual <- actual_values[[outcome]]
-    
+  if (outcome_i %in% names(actual_values)) {
+    actual <- actual_values[[outcome_i]]
+
     # Ensure same length
     min_length <- min(length(pred), length(actual))
     pred <- pred[1:min_length]
     actual <- actual[1:min_length]
-    
+
     # Check for sufficient valid pairs
     valid_pairs <- complete.cases(pred, actual)
     if (sum(valid_pairs) >= 3) {
-      
+
       cor_test <- tryCatch({
         cor.test(pred, actual, method = "pearson", use = "complete.obs")
       }, error = function(e) {
-        cat("Error in correlation for", model_id, outcome, ":", e$message, "\n")
+        cat("Error in correlation for", model_id, outcome_i, ":", e$message, "\n")
         return(NULL)
       })
-      
+
       if (!is.null(cor_test)) {
         correlations <- rbind(correlations, data.frame(
           model_id = model_id,
-          outcome = outcome,
+          outcome = outcome_i,
           variant = model_info$variant,
           Pearson_Correlation = cor_test$estimate,
           Correlation_P_Value = cor_test$p.value,
@@ -1666,7 +1695,7 @@ for (model_id in names(predictions)) {
         ))
       }
     } else {
-      cat("Warning: Not enough complete cases for correlation -", model_id, outcome, "\n")
+      cat("Warning: Not enough complete cases for correlation -", model_id, outcome_i, "\n")
     }
   } else {
     cat("Warning: No actual values found for outcome:", outcome, "\n")
@@ -1691,7 +1720,8 @@ library(doParallel)
 library(foreach)
 library(data.table)
 
-output <- "prediction_models/STRING_WSS/all_model/new/mrf"
+output <- "prediction_models/STRING_WSS_v2/model_info/mrf"
+if (!dir.exists(output)) dir.create(output, recursive = TRUE)
 
 
 variants <- list(
@@ -1713,13 +1743,16 @@ mtry_grid <- c(2, 3, 5, 7, 10)
 num_trees_grid <- c(500, 1000, 1500)
 min_node_size_grid <- c(1, 3, 5)
 
-# Set up parallel backend
-cores <- detectCores() - 1
+# Set up parallel backend -- capped lower than other sections: each worker
+# fits a 75-outcome multivariate rfsrc model, which is far more memory-heavy
+# per-worker than joinet/glmnet/ranger's single/few-outcome fits, and running
+# detectCores()-1 workers here was OOM-killing the process.
+cores <- min(6, detectCores() - 1)
 cl <- makeCluster(cores)
 registerDoParallel(cl)
 
 # Export necessary functions and data to the parallel workers
-clusterExport(cl, c("get_xcols", "pheno2", "outcome", "K_outer", "K_inner", 
+clusterExport(cl, c("get_xcols", "pheno2", "outcome", "K_outer", "K_inner",
                     "variants", "predictor_pool"))
 
 # Custom CV function for Multivariate rfsrc
@@ -2078,7 +2111,7 @@ metrics <- lapply(names(predictions), function(model_id) {
     c_index_result <- tryCatch({
       rcorr.cens(pred_valid, actual_valid)
     }, error = function(e) {
-      c(C = NA, Dxy = NA, S.D. = NA, n = NA)
+      c("C Index" = NA, Dxy = NA, S.D. = NA, n = NA)
     })
     
     c_index <- c_index_result["C Index"]
@@ -2146,15 +2179,15 @@ for (model_id in names(predictions)) {
   model_info <- final_models[[model_id]]
   
   for (i in seq_along(model_info$outcomes)) {
-    outcome <- model_info$outcomes[i]
+    outcome_i <- model_info$outcomes[i]  # local name -- avoid clobbering the global `outcome` vector
     pred <- pred_matrix[, i]
-    actual <- actual_values[[outcome]]
-    
+    actual <- actual_values[[outcome_i]]
+
     cor_test <- cor.test(pred, actual, method = "pearson", use = "complete.obs")
-    
+
     correlations <- rbind(correlations, data.frame(
       model_id = model_id,
-      outcome = outcome,
+      outcome = outcome_i,
       variant = model_info$variant,
       Pearson_Correlation = cor_test$estimate,
       Correlation_P_Value = cor_test$p.value,
