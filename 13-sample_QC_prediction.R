@@ -75,13 +75,13 @@ option_list <- list(
   make_option(
     c("-e", "--eigengenes"),
     type = "character",
-    default = "module_scores/dataProt_SS-205063.STRING.INT.WSS.csv",
+    default = "module_scores/dataProt_SS-205063.STRING.INT.follow-up.WSS.csv",
     help = "File path to eigengenes csv [default: %default]"
   ),
   make_option(
     c("--preds"),
     type = "character",
-    default = "prediction_models/STRING_WSS/all_model/model_info/joinet/INT/Biomarkers_Age_Sex.csv",
+    default = "prediction_models/STRING_WSS_v2/model_info/joinet/Biomarkers_Age_Sex.csv",
     help = "File path to predicted eigengenes csv [default: %default]"
   ),
   make_option(
@@ -377,8 +377,54 @@ a <- merge(a, all_svs, by = "SampleID")
 # setnames(svs, gsub("V", "sv", names(svs)))
 # a <- cbind(a, svs)
 
-# add to covs 
+# add to covs
 covs <- c(covs, names(all_svs)[names(all_svs) != "SampleID"])
+
+# SV x module VIF diagnostic (--clin only; prots means something very
+# different -- thousands of raw proteins, not modules -- in the
+# non-clin WSS_predict path, where this diagnostic isn't meaningful and
+# would be far more expensive) --------------------------------------
+if (clin) {
+  # For each module, treat it as the exposure alongside the SVs and other
+  # covariates, and compute each SV's VIF in that design (1/(1-R^2) from
+  # regressing the SV on every other term). Deduplicated to one row per
+  # PIDN (earliest DS1V), matching how this script already handles
+  # repeated follow-up visits elsewhere (SVA training set above, and the
+  # feature-importance step below) -- SVs here are projected from a
+  # per-subject SVA fit onto every visit, so using all repeated-visit
+  # rows as-is would let multiply-visited subjects dominate the VIF/R^2
+  # estimate.
+  sv_names <- names(all_svs)[names(all_svs) != "SampleID"]
+  orig_covs <- setdiff(covs, sv_names)
+  a_dedup <- a[order(DS1V)][, .SD[1], by = PIDN]
+
+  vif_mat <- matrix(NA_real_, nrow = length(prots), ncol = length(sv_names),
+                     dimnames = list(prots, sv_names))
+
+  for (m in prots) {
+    if (!m %in% names(a_dedup)) next
+    dsub <- as.data.frame(a_dedup[, c(m, orig_covs, sv_names), with = FALSE])
+    dsub <- dsub[complete.cases(dsub), ]
+    # drop columns that are constant within this module's complete-case
+    # subset -- model.matrix() errors trying to build contrasts for a
+    # single-level factor (the same issue this script already handles for
+    # SV generation itself, e.g. "Study" dropped as univariate above)
+    dsub <- dsub[, sapply(dsub, function(x) length(unique(x)) > 1), drop = FALSE]
+    if (!m %in% names(dsub) || nrow(dsub) < ncol(dsub) + 5) next  # not enough rows/variation to fit reliably
+
+    mm <- model.matrix(~ ., data = dsub)[, -1, drop = FALSE]
+    for (sv in sv_names) {
+      if (!sv %in% colnames(mm)) next
+      y <- mm[, sv]
+      X <- mm[, setdiff(colnames(mm), sv), drop = FALSE]
+      r2 <- tryCatch(summary(lm(y ~ X))$r.squared, error = function(e) NA_real_)
+      vif_mat[m, sv] <- if (!is.na(r2) && r2 < 1) 1 / (1 - r2) else NA_real_
+    }
+  }
+
+  fwrite(as.data.table(round(vif_mat, 3), keep.rownames = "module"),
+    file = file.path(output, paste(nameset, "sv_vif_matrix.csv", sep = ".")))
+}
 
 
 # GLM based feature selection -----------------------------------------

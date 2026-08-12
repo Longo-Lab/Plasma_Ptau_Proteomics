@@ -247,7 +247,11 @@ for (m in prots) {
   if (!m %in% names(a)) next
   dsub <- as.data.frame(a[, c(m, orig_covs, sv_names), with = FALSE])
   dsub <- dsub[complete.cases(dsub), ]
-  if (nrow(dsub) < ncol(dsub) + 5) next  # not enough rows to fit reliably
+  # drop columns that are constant within this module's complete-case
+  # subset -- model.matrix() errors trying to build contrasts for a
+  # single-level factor
+  dsub <- dsub[, sapply(dsub, function(x) length(unique(x)) > 1), drop = FALSE]
+  if (!m %in% names(dsub) || nrow(dsub) < ncol(dsub) + 5) next  # not enough rows/variation to fit reliably
 
   mm <- model.matrix(~ ., data = dsub)[, -1, drop = FALSE]  # dummy-codes any factor covariates
   for (sv in sv_names) {
