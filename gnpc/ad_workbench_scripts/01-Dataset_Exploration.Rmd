@@ -1,0 +1,616 @@
+
+
+# Setup
+```{r setup}
+library(data.table)
+library(dplyr)
+# source("02-Cell-type_scoring.r")
+
+dat_dir <- "GNPC Harmonised Dataset v1/Clinical"
+
+```
+
+
+# Loading datasets
+```{r meta}
+
+dic <- fread(file.path(dat_dir, "Documents", "datadictionary.csv"))
+meta <- fread(file.path(dat_dir, "SomalogicMetaV1_anonymized.csv"))
+clin <- fread(file.path(dat_dir, "ClinicalV1_anonymized.csv"))
+gen <- fread(file.path(dat_dir, "GeneticsV1_anonymized.csv"))
+pidn <- fread(file.path(dat_dir, "PersonMappingV1_anonymized.csv"))
+soma <- fread(file.path(dat_dir, "SomalogicAnalyteInfoV1_anonymized.csv"))
+# prot1 <- fread(file.path(dat_dir, "Somalogic02V1_anonymized.csv"))
+
+```
+
+# Gene conversion table
+```{r gene_names}
+
+# fetch top associated probe from Stanford ADRC biomarker data.
+prot <- fread("dataProt_SS-205063.probe_list.csv")
+
+# match and get colnames (have to handle piped gene names and missing probe names)
+prot[, seq_id := gsub("^.*\\.(\\d+)\\.(\\d+)\\.\\d+$", "\\1-\\2", ix)]
+# prot[ix %like% "None", seq_id := gsub("None.", "", ix)]
+# prot[, seq_id := sub("^(\\d+)\\.(\\d+)\\..*$", "\\1-\\2", seq_id)]
+
+# merge
+prot <- merge(prot, soma, by = 'seq_id', all.x = TRUE)
+# prot[is.na(table_name)]
+
+```
+
+# Mapping baseline visits
+```{r}
+# filter by participants with genetic data? (10k pids vs 7500)
+apo <- FALSE
+
+# grab ad set
+baseline <- clin[age_at_visit > 0 & sex > 0 & ftd != 1 & pd != 1 & als != 1, .(
+  contributor_code, 
+  sample_id,
+  sequential_visit_number,
+  age_at_visit,
+  sex,
+  race,
+  recruited_control,
+  ad,
+  mci_sci,
+  cdr,
+  cognitive_test_battery,
+  cognitive_test_score,
+  cognitive_test_date,
+  computed_cognitive_test_score,
+  tia,
+  tbi,
+  cancer,
+  diabetes,
+  chf,
+  copd,
+  mi,
+  afib,
+  angina,
+  hyperlipidaemia,
+  hypertension,
+  depression,
+  anxiety
+)]
+# merge and drop CSF
+baseline <- merge(baseline, meta[, .(sample_id, sample_matrix)], all.x = TRUE)
+baseline <- baseline[sample_matrix %like% 'Plasma']
+
+# merge with APOE
+apoe <- gen[gene == "APOE" & variant > 0][, .(contributor_code, sample_id, variant)]
+setnames(apoe, "variant", "APOE")
+apoe[, APOE := paste0("e", APOE)]
+
+# merge with PIDNs
+if (apo) {
+  apoe <- merge(pidn[, .(person_id, sample_id)], apoe)[order(person_id, sample_id)]
+  baseline <- merge(apoe, baseline, by = c("contributor_code", "sample_id"))
+} else {
+  baseline <- merge(pidn[, .(person_id, sample_id)], baseline, by = "sample_id")
+}
+
+# trying to map diagnosis like in Vignette 1, but add flexible MCIs group
+baseline[, Diagnosis_group := fcase(
+  # AD (even if MCI also present)
+  ad == 1, "AD",
+  
+  # MCI - be inclusive to recover most cases
+  mci_sci == 1 | (ad != 1 & cdr == 0.5), "MCI",
+  
+  # HC
+  (recruited_control == 1 | cdr == 0) & ad != 1 & mci_sci != 1, "HC",
+  
+  default = NA_character_
+)]
+
+# Last KNOWN diagnosis (carry forward)
+baseline[, last_diagnosis := {
+  dx <- Diagnosis_group[!is.na(Diagnosis_group)]
+  if(length(dx) > 0) dx[length(dx)] else NA_character_
+}, by = person_id]
+
+# Flag diagnosis trajectory for maybe future use
+baseline[, diagnosis_trajectory := {
+  fcase(
+    # Reverters (clinically unlikely)
+    Diagnosis_group == "MCI" & last_diagnosis == "HC", "reversion",
+    Diagnosis_group == "AD" & last_diagnosis %in% c("HC", "MCI"), "reversion",
+    
+    # Progressors (expected)
+    Diagnosis_group == "HC" & last_diagnosis == "MCI", "progression",
+    Diagnosis_group == "HC" & last_diagnosis == "AD", "progression",
+    Diagnosis_group == "MCI" & last_diagnosis == "AD", "progression",
+    
+    # Stable
+    Diagnosis_group == last_diagnosis, "stable",
+    
+    default = NA_character_
+  )
+}, by = person_id]
+
+# simplified AD
+baseline[, diagnosis_bin := fcase(
+  Diagnosis_group == "HC", 0L,
+  Diagnosis_group == "AD", 1L,
+  Diagnosis_group == "MCI", NA_integer_
+)]
+baseline[, last_diag_bin := fcase(
+  last_diagnosis == "HC", 0L,
+  last_diagnosis == "AD", 1L,
+  last_diagnosis == "MCI", NA_integer_
+)]
+
+
+# clean cog scores
+baseline[, cognitive_test_score := case_when(
+  cognitive_test_score == -1 ~ NA,
+  cognitive_test_battery == "MMSE" & cognitive_test_score > 30 ~ NA,
+  cognitive_test_battery == "MOCA" & cognitive_test_score > 30 ~ NA,
+  TRUE ~ cognitive_test_score
+)]
+
+# convert MoCA
+conv <- fread("Roheger_2022.MMSE-2-MoCA.csv")
+setkey(conv, MMSE)
+baseline[cognitive_test_battery == "MMSE", MoCA := fifelse(
+  Diagnosis_group == "AD" & !is.na(Diagnosis_group),
+  conv$AD.MoCA[match(cognitive_test_score, conv$MMSE)],
+  conv$Full.MoCA[match(cognitive_test_score, conv$MMSE)]
+)]
+baseline[cognitive_test_battery == "MOCA", MoCA := cognitive_test_score]
+
+# get final cog score
+baseline[, last_MoCA := MoCA[which.max(sequential_visit_number)], by = person_id]
+
+# Calculate MoCA velocity (slope per 365 days) for participants with 2+ visits
+# In GNPC, no reliable time between visits, best assumption is sequential visits are per year 
+baseline[!is.na(MoCA), MoCA_velocity := {
+    if (.N >= 2) {
+      # Fit linear model: MoCA ~ DS1V
+      fit <- lm(MoCA ~ sequential_visit_number)
+      # Extract slope and convert to per-year rate
+      coef(fit)[2] 
+    } else {
+      NA_real_
+    }
+  }, 
+  by = person_id
+]
+
+# Floor cognitively normal improvers and remove low baseline improvers
+baseline[, MoCA_v_floored := {
+  baseline_score = MoCA[which.min(sequential_visit_number)]
+  fcase(
+    MoCA_velocity > 1e-10 & baseline_score < 17, NA_real_,  # Exclude low baseline improvers
+    MoCA_velocity > 1e-10, 0,                                # Floor other improvers
+    default = MoCA_velocity                                  # Keep decliners/stable
+  )
+}, by = person_id]
+
+# Create simplified race categories for analysis
+baseline[, race := fcase(
+  race == 5, "White",
+  race == 2, "Black/African_American",
+  race == 4, "Asian",
+  race == 1, "American_Indian/Alaska_Native",
+  race %in% c(3, 66, 77, 88), "Other/Mixed",
+  race == -1, "Unknown",
+  default = "Unknown"
+)]
+
+
+# drop others & J
+baseline2 <- baseline
+baseline <- baseline[!is.na(Diagnosis_group)]
+baseline <- baseline[diagnosis_trajectory != "reversion"]
+baseline <- baseline[contributor_code != "J"]
+
+# collecting first visit
+baseline <- baseline[order(person_id, sequential_visit_number)][, .SD[1], by = person_id]
+
+# set up factors for contributor_code
+baseline[, contributor_code := factor(
+  x = contributor_code, 
+  levels = sort(unique(baseline$contributor_code))
+)]
+
+# refactor with a "mix" column for N < 200
+lets <- sort(
+  as.character(baseline[, .N, by = contributor_code][N >= 200, contributor_code])
+)
+test <- c(
+  setNames(lets, lets),
+  list(
+    "Mix" = as.character(baseline[, .N, by = contributor_code][N < 200, contributor_code])
+  )
+)
+levels(baseline$contributor_code) <- test
+
+# cleaning clinical data
+cols <- c("tia", "tbi", "cancer", "diabetes", "chf", "copd", "mi", "afib", "angina", "hyperlipidaemia", "hypertension", "depression", "anxiety")
+baseline[, (cols) := lapply(.SD, function(i) ifelse(i %in% c(0, 1), i, NA)), .SDcols = cols]
+
+# check values
+summary_long <- melt(baseline[, .SD, .SDcols = cols], measure.vars = cols)[
+  , .(count = .N), by = .(variable, value)
+]
+dcast(summary_long, variable ~ value, value.var = "count", fill = 0)
+
+```
+
+# checking improvers for floored MoCA velocity
+```{r}
+improvers <- baseline2[MoCA_velocity > 1e-5, unique(person_id)]
+table(baseline2[person_id %in% improvers, .N, by=person_id]$N)  # How many visits?
+summary(baseline2[person_id %in% improvers, min(MoCA), by=person_id]$V1)  # Baseline scores?
+
+baseline2[person_id %in% improvers, .(
+   baseline_MoCA = MoCA[which.min(sequential_visit_number)],           # First visit (earliest date)
+   final_MoCA = MoCA[which.max(sequential_visit_number)],              # Last visit (latest date)
+   min_MoCA = min(MoCA, na.rm=TRUE),                # Lowest score ever
+   max_MoCA = max(MoCA, na.rm=TRUE),                # Highest score ever
+   change_firstlast = MoCA[which.max(sequential_visit_number)] - MoCA[which.min(sequential_visit_number)],  # Actual trajectory
+   change_minmax = max(MoCA, na.rm=TRUE) - min(MoCA, na.rm=TRUE),     # Range
+   n_visits = .N,
+   time_span_years = max(sequential_visit_number) - min(sequential_visit_number)
+), by = person_id][order(-change_firstlast)][, -1]
+
+library(ggplot2)
+library(patchwork)
+
+# Prepare data for visualization
+fig_data <- baseline2[!is.na(MoCA_velocity), .(
+  first_MoCA = MoCA[which.min(sequential_visit_number)],
+  last_MoCA = MoCA[which.max(sequential_visit_number)],
+  change = MoCA[which.max(sequential_visit_number)] - MoCA[which.min(sequential_visit_number)],
+  n_visits = .N,
+  time_span_years = max(sequential_visit_number) - min(sequential_visit_number),
+  velocity = MoCA_velocity,
+  velocity_cleaned = MoCA_v_floored
+), by = person_id]
+
+# Add trajectory classification
+velocity_tolerance <- 1e-10
+fig_data[, trajectory := fcase(
+  velocity > velocity_tolerance & first_MoCA < 17, "Improver (low baseline, excluded)",
+  velocity > velocity_tolerance & first_MoCA >= 17, "Improver (practice effect, floored)",
+  abs(velocity) <= velocity_tolerance, "Stable",
+  velocity < -velocity_tolerance, "Decliner"
+)]
+
+# Set factor levels for ordering
+fig_data[, trajectory := factor(trajectory, levels = c(
+  "Improver (low baseline, excluded)",
+  "Improver (practice effect, floored)",
+  "Stable",
+  "Decliner"
+))]
+
+# Color scheme
+traj_colors <- c(
+  "Improver (low baseline, excluded)" = "#D55E00",
+  "Improver (practice effect, floored)" = "#F0E442",
+  "Stable" = "#999999",
+  "Decliner" = "#0072B2"
+)
+
+# Simpler 3-panel version
+p1_simple <- ggplot(fig_data, aes(x = first_MoCA, y = last_MoCA, color = trajectory)) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray50") +
+  geom_point(alpha = 0.7, size = 3) +
+  scale_color_manual(values = traj_colors, name = "") +
+  scale_x_continuous(breaks = seq(0, 30, 5), limits = c(5, 30)) +
+  scale_y_continuous(breaks = seq(0, 30, 5), limits = c(5, 30)) +
+  labs(
+    x = "Baseline MoCA Score",
+    y = "Final MoCA Score",
+    title = "A"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(face = "bold", size = 16)
+  )
+
+p2_simple <- ggplot(fig_data, aes(x = velocity , fill = trajectory)) +
+  geom_histogram(binwidth = 0.5, color = "white", alpha = 0.8) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black", linewidth = 0.8) +
+  scale_fill_manual(values = traj_colors) +
+  scale_x_continuous(breaks = seq(-10, 10, 2)) +
+  labs(
+    x = "MoCA Velocity (points/year, raw)",
+    y = "Count",
+    title = "B"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold", size = 16)
+  )
+
+fig_data_cleaned <- fig_data[!is.na(velocity_cleaned)]
+p3_simple <- ggplot(fig_data_cleaned, aes(x = velocity_cleaned , fill = trajectory)) +
+  geom_histogram(binwidth = 0.5, color = "white", alpha = 0.8) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black", linewidth = 0.8) +
+  scale_fill_manual(values = traj_colors) +
+  scale_x_continuous(breaks = seq(-10, 10, 2)) +
+  labs(
+    x = "MoCA Velocity (points/year, cleaned)",
+    y = "Count",
+    title = "C"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold", size = 16)
+  )
+
+simple_plot <- p1_simple / (p2_simple | p3_simple) +
+  plot_layout(heights = c(1, 0.8), guides = "collect") +
+  plot_annotation(theme = theme(legend.position = "bottom"))
+
+ggsave(
+  filename = file.path("manuscript_figs", 
+    "Supplementary_Figure_MoCA_Trajectories_Simple_GNPC.pdf"
+  ), 
+  plot = simple_plot, 
+  width = 8, 
+  height = 7
+)
+
+```
+
+
+
+
+# checking last_diag == NA for issues
+```{r last_diag_qc}
+# # Step 1: Identify people with diagnosis but NA last_diagnosis
+# has_dx_missing_last <- baseline2[!is.na(Diagnosis_group) & is.na(last_diagnosis), unique(person_id)]
+# length(has_dx_missing_last)  
+# 
+# # Step 2: Look at their visit patterns
+# baseline2[person_id %in% has_dx_missing_last, 
+#   .(person_id, sequential_visit_number, Diagnosis_group, 
+#     ad, mci_sci, cdr, recruited_control)
+# ][order(person_id, sequential_visit_number)]
+# 
+# # Step 3: Check if last visit has missing diagnosis variables
+# baseline2[person_id %in% has_dx_missing_last, .(
+#   person_id,
+#   n_visits = .N,
+#   last_visit_num = max(sequential_visit_number),
+#   # At last visit:
+#   last_has_dx = !is.na(Diagnosis_group[which.max(sequential_visit_number)]),
+#   last_ad = ad[which.max(sequential_visit_number)],
+#   last_mci = mci_sci[which.max(sequential_visit_number)],
+#   last_cdr = cdr[which.max(sequential_visit_number)],
+#   # Across all visits:
+#   any_HC = any(Diagnosis_group == "HC", na.rm=TRUE),
+#   any_MCI = any(Diagnosis_group == "MCI", na.rm=TRUE),
+#   any_AD = any(Diagnosis_group == "AD", na.rm=TRUE)
+# ), by = person_id][1:20]  # First 20 examples
+# 
+# # Step 4: Summarize the patterns
+# missing_last_summary <- baseline2[person_id %in% has_dx_missing_last, .(
+#   n_total_visits = .N,
+#   n_visits_with_dx = sum(!is.na(Diagnosis_group)),
+#   last_visit_has_dx = !is.na(Diagnosis_group[which.max(sequential_visit_number)]),
+#   last_ad_value = ad[which.max(sequential_visit_number)],
+#   last_mci_value = mci_sci[which.max(sequential_visit_number)],
+#   last_cdr_value = cdr[which.max(sequential_visit_number)],
+#   first_diagnosis = Diagnosis_group[which.min(sequential_visit_number)],
+#   n_diagnosis_changes = uniqueN(Diagnosis_group, na.rm=TRUE)
+# ), by = person_id]
+# 
+# # Summary
+# missing_last_summary[, .N, by = last_visit_has_dx]
+# missing_last_summary[last_visit_has_dx == FALSE, .N, by = .(last_ad_value, last_mci_value, last_cdr_value)]
+
+remove(baseline2)
+
+```
+
+
+# joining proteomic data in batches of 1k participants into analysis tables
+```{r prep_prots}
+# For each prot file, loop through and read in samples/proteins into a master table.
+dt <- lapply(sprintf("%02.0f", 1:12), function(i) {
+  x <- fread(file.path(dat_dir, paste0("Somalogic", i, "V1_anonymized.csv")))
+  cols <- c("sample_id", names(x)[names(x) %in% prot$column_name])
+  x <- x[sample_id %in% baseline$sample_id, ..cols]
+  return(transpose(x, make.names = 'sample_id', keep.names = 'column_name'))
+})
+dt <- rbindlist(dt, use.names = TRUE)
+
+# merge with Symbols for analysis
+dt <- merge(prot[, .(GENE, column_name)], dt)
+
+# looking at proteomic counts
+sample_counts <- data.table(
+  Sample = names(dt)[3:ncol(dt)],
+  Count = dt[, lapply(.SD, function(x) sum(x != -1)), .SDcols = 3:ncol(dt)] |> unlist()
+)
+table(sample_counts$Count)
+# # by inspection, the older Soma sets are all in H, W and V, can be dropped
+# baseline[sample_id %in% sample_counts[Count < 6000, Sample]][, .N, by = contributor_code]
+# baseline[, .N, by = contributor_code]
+
+# filter for older arrays
+cols <- c(names(dt)[1:2], sample_counts[Count > 6000, Sample])
+dt <- dt[, ..cols]
+baseline <- baseline[sample_id %in% sample_counts[Count > 6000, Sample]]
+baseline$contributor_code <- droplevels(baseline$contributor_code)
+
+# filter for J
+cols <- c(names(dt)[1:2], baseline$sample_id)
+dt <- dt[, ..cols]
+
+```
+
+# Checking the shift in MoCA from baseline to last
+```{r moca_trends}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+plot_data <- baseline %>%
+  mutate(
+    id = row_number(),
+    change = case_when(
+      is.na(last_MoCA) | is.na(MoCA) ~ "Missing",
+      MoCA > last_MoCA ~ "Increasing",
+      MoCA < last_MoCA ~ "Decreasing",
+      TRUE ~ "No Change"
+    )
+  ) %>%
+  pivot_longer(cols = c(last_MoCA, MoCA),
+               names_to = "timepoint",
+               values_to = "score") %>%
+  mutate(timepoint = factor(timepoint, levels = c("last_MoCA", "MoCA")))
+
+# Create the plot
+ggplot(plot_data, aes(x = timepoint, y = score, group = id)) +
+  geom_line(aes(color = change), linewidth = 1.2, alpha = 0.7) +
+  geom_point(size = 2.5) +
+  scale_color_manual(values = c("Increasing" = "#2E7D32",
+                                "Decreasing" = "#C62828",
+                                "No Change" = "#757575",
+                                "Missing" = "#FFA726")) +
+  scale_x_discrete(labels = c("last_MoCA" = "Last MoCA", "MoCA" = "Current MoCA")) +
+  labs(x = "", 
+       y = "MoCA Score",
+       color = "Change",
+       title = "MoCA Score Changes") +
+  theme_minimal() +
+  theme(legend.position = "right",
+        panel.grid.major.x = element_blank())
+
+
+
+```
+
+
+
+# Adding in mv_sig_cdr (global signature of dementia severity) from Imam et al 2025
+sample_ids don't match the paper, so can't infer intercept
+```{r cog_score}
+# # Functions -----------------------------------------------
+# infer_lasso_intercept <- function(train_data, train_outcomes, 
+#                                   protein_coefficients, 
+#                                   method = "mle") {
+#   
+#   proteins <- protein_coefficients$sequence_id
+#   coefs <- protein_coefficients$lasso_coef
+#   
+#   # Calculate linear predictor without intercept
+#   X <- as.matrix(train_data[, proteins])
+#   linear_pred <- X %*% coefs
+#   
+#   if (method == "mle") {
+#     # Maximum likelihood estimation
+#     objective <- function(intercept) {
+#       probs <- plogis(linear_pred + intercept)
+#       -sum(train_outcomes * log(probs + 1e-10) + 
+#            (1 - train_outcomes) * log(1 - probs + 1e-10))
+#     }
+#   } else if (method == "prevalence") {
+#     # Match prevalence
+#     objective <- function(intercept) {
+#       probs <- plogis(linear_pred + intercept)
+#       (mean(probs) - mean(train_outcomes))^2
+#     }
+#   }
+#   
+#   result <- optimize(objective, interval = c(-10, 10))
+#   return(result$minimum)
+# }
+# 
+# # Save as a function for repeated use
+# LASSO_protein_signature <- function(new_data, protein_coefficients, intercept) {
+#   
+#   # Coefficients from paper/original model
+#   proteins <- protein_coefficients$sequence_id
+#   coefs <- protein_coefficients$lasso_coeff
+# 
+#   # Check data
+#   if (!all(proteins %in% colnames(new_data))) {
+#     stop("Missing required proteins: ", 
+#          paste(setdiff(proteins, colnames(new_data)), collapse = ", "))
+#   }
+#   
+#   # Predict
+#   X <- as.matrix(new_data[, proteins])
+#   linear_pred <- intercept + X %*% coefs
+#   prob <- 1 / (1 + exp(-linear_pred))
+#   
+#   return(data.frame(
+#     linear_predictor = as.vector(linear_pred),
+#     probability = as.vector(prob),
+#     prediction = ifelse(prob > 0.5, "Positive", "Negative")
+#   ))
+# }
+# 
+# 
+# # Main ------------------------------------------
+# # add in the global signature of dementia from Vignette 1 in Imam et al 2025
+# mv_sig <- fread("Supp_table_7.csv")
+# mv_coeffs <- fread("Supp_table_8.txt")
+# # mv_coeffs[!sequence_id %in% soma$column_name]
+# 
+# # get the prot data for these genes
+# # For each prot file, loop through and read in samples/proteins into a master table.
+# mv_train <- lapply(sprintf("%02.0f", 1:12), function(i) {
+#   x <- fread(file.path(dat_dir, paste0("Somalogic", i, "V1_anonymized.csv")))
+#   cols <- c("sample_id", names(x)[names(x) %in% mv_coeffs$sequence_id])
+#   x <- x[sample_id %in% mv_sig[split == "train", sample_id], ..cols]
+#   return(x)
+# })
+# mv_train <- as.matrix(
+#   Reduce(function(x, y) merge(x, y), mv_train), 
+#   rownames = 'sample_id'
+# )
+# 
+# 
+# # Get the intercept approx on the paper data
+# intercept <- infer_lasso_intercept(
+#   train_data = train_data,
+#   train_outcomes = train_outcomes,
+#   protein_coefficients = protein_coefficients,
+#   method = "mle"
+# )
+# 
+# cat("Inferred intercept:", intercept, "\n")
+# 
+# # predict values for the baseline data
+# baseline$mv_sig_cdr <- LASSO_protein_signature(base_mat)
+
+
+
+```
+
+
+# Writing to files
+```{r write_files}
+baseline[, .N, by = Diagnosis_group]
+baseline[, .N, by = contributor_code]
+
+fwrite(baseline, file = "GNPC_baseline.csv")
+fwrite(dt, file = "GNPC_table.csv")
+fwrite(dt[, 1:21], file = "GNPC_test.csv")
+
+# Issues with the cluster & memory, splitting by contributor
+lapply(levels(baseline$contributor_code), function(i) {
+  selected_cols <- c(names(dt)[1:2], baseline[contributor_code == i, sample_id])
+  fwrite(dt[, ..selected_cols], 
+    file = paste0("GNPC_", i, ".csv")
+  )
+})
+
+
+```
+

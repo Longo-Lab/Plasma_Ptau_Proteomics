@@ -71,8 +71,8 @@ option_list <- list(
     c("-d", "--data-path"),
     type = "character",
     dest = "data_path",
-    default = "../../celltype_scores",
-    help = "File path to celltype scores [default: %default]"
+    default = "../../module_scores",
+    help = "File path to module scores [default: %default]"
   )
 )
 
@@ -361,7 +361,7 @@ a <- merge(a, x, by = "PIDN")
 if (score %like% "eigengenes") {
   tail <- "csv" 
   score_val <- "Eigengene"
-  scores <- fread("../../cell_type_prot/STRING_merged_scaled_scores.csv")
+  scores <- fread(file.path(data_path, "STRING_merged_scaled_scores.csv"))
   scores <- unique(scores[, .(Biomarker, cluster, term)])
   scores[, name := paste0("ME", Biomarker, "-", cluster)]
   scor <- scores[, term]
@@ -369,7 +369,7 @@ if (score %like% "eigengenes") {
 } else if (score %like% "WSS") {
   tail <- "csv" 
   score_val <- "Weighted Sum of Scores"
-  scores <- fread("../../cell_type_prot/STRING_merged_scaled_scores.csv")
+  scores <- fread(file.path(data_path, "STRING_merged_scaled_scores.csv"))
   scores <- unique(scores[, .(Biomarker, cluster, term)])
   scores[, name := paste0(Biomarker, ".", cluster)]
   scor <- scores[, term]

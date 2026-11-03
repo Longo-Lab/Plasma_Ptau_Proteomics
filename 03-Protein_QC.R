@@ -3,7 +3,7 @@
 ##
 ## Script name: 03-Protein_QC.R
 ##
-## Version: 0.0.9
+## Version: 0.0.10
 ##
 ## Purpose of script: Prepare LnPlasmaPTau data for gene set analyses
 ##
@@ -17,6 +17,15 @@
 ## ---------------------------
 ##
 ## Notes:
+##   v0.0.10 - convertGeneSymbol() no longer uses biomaRt (broken upstream,
+##     see Huber-group-EMBL/biomaRt#161); now reads Ensembl release 115's
+##     FTP-published entrez xref table + GTF directly, cached locally on
+##     first use. Release 115 (published 2025-09-03) is the closest FTP
+##     snapshot to the sep2025.archive.ensembl.org host this previously
+##     pinned to, and resolving locally from flat files sidesteps both the
+##     archive-browsing breakage and remart's lack of an entrezgene_id
+##     filter (checked; not supported as of Huber-group-EMBL/remart@1f7f140).
+##
 ##   Post linear regression, filters based on protein qualities, dropping
 ##   non-human and non-protein markers. Then matches to Ensembl gene IDs.
 ##
@@ -36,7 +45,6 @@
 
 ## load up the packages we will need:  (uncomment as required)
 library(data.table)
-library(biomaRt)
 library(ggplot2)
 library(ggpubr)
 library(gprofiler2)
@@ -116,39 +124,71 @@ for (field in fields) {
 }
 
 
-ensver <- NULL
-
-
 # Functions -------------------------------------
+#' Download (if not already cached) an Ensembl release's gene-to-Entrez
+#' xref table and gene annotation GTF from the Ensembl FTP site
+#'
+#' @param ref_dir directory to cache the downloaded files in
+#' @param release Ensembl release number
+#'
+#' @return list(entrez = path, gtf = path) to the two cached files
+ensembl_ftp_cache <- function(ref_dir, release = 115) {
+  dir.create(ref_dir, showWarnings = FALSE, recursive = TRUE)
+  base <- sprintf("https://ftp.ensembl.org/pub/release-%d", release)
+  entrez_f <- file.path(ref_dir, sprintf("Homo_sapiens.GRCh38.%d.entrez.tsv.gz", release))
+  gtf_f <- file.path(ref_dir, sprintf("Homo_sapiens.GRCh38.%d.gtf.gz", release))
+  if (!file.exists(entrez_f)) {
+    download.file(
+      sprintf("%s/tsv/homo_sapiens/Homo_sapiens.GRCh38.%d.entrez.tsv.gz", base, release),
+      entrez_f, quiet = TRUE
+    )
+  }
+  if (!file.exists(gtf_f)) {
+    download.file(
+      sprintf("%s/gtf/homo_sapiens/Homo_sapiens.GRCh38.%d.gtf.gz", base, release),
+      gtf_f, quiet = TRUE
+    )
+  }
+  list(entrez = entrez_f, gtf = gtf_f)
+}
+
 #' for a given column of NCBI IDs, replace them with ensembl gene ids
 #' includes a filter for autosomal genes that are not pseudo or TEC
 #'
 #' @param dt data table to replace names
 #' @param colname string, name of the column containing NCBI gene IDs
-#' @param symname string, name of the column containing gene Symbols 
+#' @param symname string, name of the column containing gene Symbols
 #' @param keep.symbols boolean, retain the symbols column?
 #'
 #' @return dt with a GENE column
 convertGeneSymbol <- function(dt, colname, symname, keep.symbols = FALSE) {
-  require("biomaRt")
   print(paste(length(unique(dt[[colname]])), "genes to look up"))
-  ensembl <- useEnsembl("ensembl", 
-    dataset = "hsapiens_gene_ensembl", 
-    version = ensver
+
+  ff <- ensembl_ftp_cache(file.path(dirname(ref), "reference/ensembl_115"))
+
+  # entrez xref table (file is transcript-level; dedup to gene-level pairs)
+  entrez_dt <- fread(cmd = sprintf("zcat %s", shQuote(ff$entrez)), sep = "\t")
+  entrez_dt <- entrez_dt[db_name == "EntrezGene"]
+  entrez_dt <- unique(entrez_dt[, .(gene_stable_id, xref)])
+  setnames(entrez_dt, c("gene_stable_id", "xref"), c("ensembl_gene_id", "entrezgene_id"))
+  entrez_dt[, entrezgene_id := as.integer(entrezgene_id)]
+
+  # GTF gene-feature rows only (prefiltered with awk before fread, rather
+  # than parsing the whole transcript/exon-level file)
+  gtf_dt <- fread(
+    cmd = sprintf("zcat %s | awk -F'\\t' '$3==\"gene\"'", shQuote(ff$gtf)),
+    header = FALSE, sep = "\t", quote = ""
   )
+  setnames(gtf_dt, c("seqname", "source", "feature", "start", "end", "score", "strand", "frame", "attribute"))
+  gtf_dt[, gene_id := sub('.*gene_id "([^"]+)".*', "\\1", attribute)]
+  gtf_dt[, gene_biotype := sub('.*gene_biotype "([^"]+)".*', "\\1", attribute)]
+  gtf_dt[, gene_name := ifelse(grepl("gene_name", attribute), sub('.*gene_name "([^"]+)".*', "\\1", attribute), NA_character_)]
+  gtf_dt <- gtf_dt[, .(gene_id, external_gene_name = gene_name, gene_biotype, chromosome_name = seqname)]
+
   # match with ensembl_gene_id across both
-  x <- data.table(getBM(
-    attributes = c(
-      "ensembl_gene_id", 
-      "external_gene_name",
-      "entrezgene_id",
-      "gene_biotype", 
-      "chromosome_name"
-    ),
-    filters = "entrezgene_id",
-    values = unique(dt[[colname]]),
-    mart = ensembl
-  ))
+  x <- merge(entrez_dt, gtf_dt, by.x = "ensembl_gene_id", by.y = "gene_id")
+  x <- x[entrezgene_id %in% unique(dt[[colname]])]
+  x <- x[!is.na(external_gene_name) & external_gene_name != ""]
   print(paste(nrow(x), "total matches returned"))
   # ensembl transcript types to keep, excluding pseudogenes and TECs
   keep_categ <- grep("pseudo", unique(x$gene_biotype), value = TRUE, invert = TRUE)
@@ -158,11 +198,11 @@ convertGeneSymbol <- function(dt, colname, symname, keep.symbols = FALSE) {
   # drop duplicates on patches and scaffolds if exist on main chromosomes
   x[, chr_length := nchar(chromosome_name)]
   x <- unique(
-    x[order(entrezgene_id, external_gene_name, chr_length)], 
+    x[order(entrezgene_id, external_gene_name, chr_length)],
     by = c("entrezgene_id", "external_gene_name")
   )
-  setnames(x, 
-    old = c("ensembl_gene_id", "entrezgene_id", "external_gene_name"), 
+  setnames(x,
+    old = c("ensembl_gene_id", "entrezgene_id", "external_gene_name"),
     new = c("GENE", "NCBI_ID", "Symbol")
   )
   # replace gene names

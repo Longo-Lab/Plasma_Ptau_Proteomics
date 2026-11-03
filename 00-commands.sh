@@ -361,7 +361,10 @@ Rscript 09-WSS_construction.R \
   --INT
 
 
-# 10-Eigengene_clustering.Rmd ----------------------------
+# 10 - Prediction Model construction ---------------------
+Rscript 10-all_prediction_models.R
+
+# 11-Eigengene_clustering.Rmd ----------------------------
 # Run interactively
 
 
@@ -382,7 +385,7 @@ names=(
 )
 
 # QC and surrogates
-parallel -j 14 Rscript 12-sample_QC_WSS_clin.R \
+parallel -j 7 Rscript 12-sample_QC_WSS_clin.R \
   -i "dataProt_SS-205063.baseline_clin.csv" \
   -o "WSS_clin/{}"   \
   -v "Age,Gender,Storage_days,Study,Subarray,Fed.Fasted,HybControlNormScale,Storage,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8" \
@@ -394,35 +397,35 @@ parallel -j 14 Rscript 12-sample_QC_WSS_clin.R \
 # 02 - lme4qtl ------
 # covariates to be included, biomarker ratios do not include HybControlNormScale
 covs=(
-  'Age,Gender,Storage_days,Subarray,Fed.Fasted,HybControlNormScale,Storage,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8'
-  'Age,Gender,Subarray,Fed.Fasted,HybControlNormScale,Storage,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8'
-  'Age,Gender,Storage_days,Subarray,Fed.Fasted,HybControlNormScale,Storage,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8'
-  'Age,Gender,Subarray,Fed.Fasted,HybControlNormScale,Storage,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8'
-  'Age,Gender,Storage_days,Study,Subarray,Fed.Fasted,HybControlNormScale,Storage,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8'
-  'Age,Gender,Storage_days,Study,Subarray,Fed.Fasted,HybControlNormScale,Storage,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8'
-  'Age,Gender,Storage_days,Subarray,Fed.Fasted,Storage,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8'
+  'Age,Gender,Storage_days,Subarray,Fed.Fasted,HybControlNormScale,Storage,sv3,sv4,sv5,PC1,PC7'
+  'Age,Gender,Subarray,Fed.Fasted,Storage,sv4,sv5,PC1,PC3,PC4,PC6,PC8'
+  'Age,Gender,Storage_days,Subarray,Fed.Fasted,HybControlNormScale,Storage,sv3,sv4,PC6,PC7'
+  'Age,Gender,Subarray,Fed.Fasted,HybControlNormScale,Storage,sv3,sv6,PC1,PC2,PC4,PC5,PC6,PC7,PC8'
+  'Age,Gender,Storage_days,Subarray,Fed.Fasted,Storage,sv3,sv5,sv6,PC1,PC7,PC8'
+  'Age,Gender,Storage_days,Subarray,Storage,sv2,sv3,sv4,sv6,PC5,PC6,PC7,PC8'
+  'Age,Gender,Storage_days,Subarray,HybControlNormScale,Storage,sv3,PC1,PC5,PC6,PC7,PC8'
 )
 # Subarray for SomaLogic run as covariates in cases where it showed up in the top 
 #   half of feature importance for 01-sample_QC.R 
 recodes=(
-  'Subarray,B,D,F'
-  'Subarray,B,E'
+  'Subarray,B,D'
+  'Subarray,B,E|Storage,Negative.80C'
   'Subarray,B,D,H'
-  'Subarray,D,E'
-  'Subarray,C,D,G'
-  'Subarray,D,F'
-  'Subarray,D,F,G,H'
+  'Subarray,D,E,H|Storage,Negative.20C.LowVolume'
+  'Storage,Negative.80C'
+  'Subarray,D,F|Storage,Negative.80C'
+  'Subarray,D,F,H|Storage,Negative.80C'
 )
 
-parallel -j 1 Rscript 02-linreg_lme4qtl.R \
+parallel -j 7 Rscript 02-linreg_lme4qtl.R \
   -i "WSS_clin/{1}/dataProt_SS-205063.baseline_clin_binary.{1}.WSSnorm.csv.gz" \
   -o "WSS_clin/{1}"   \
-  -p "WSS_names.txt" \
+  --prots "WSS_names.txt" \
   -v {3} \
   -d {2} \
   -s 'Age,Storage_days,Fed.Fasted' \
   -c "{1}" \
-  -t 18 \
+  -t 2 \
   -n "dataProt_SS-205063.baseline_clin_binary.{1}" \
   --binomial \
   -f "0,1" \
@@ -436,9 +439,9 @@ names=(
   "MoCA"
   "CDRSUM"
   "last_MoCA"
-  "last_CDRSUM"
-  "MoCA_velocity"
-  "MoCA_v_floored"
+  # "last_CDRSUM"
+  # "MoCA_velocity"
+  # "MoCA_v_floored"
 )
 
 # QC and surrogates
@@ -453,33 +456,33 @@ parallel -j 4 Rscript 12-sample_QC_WSS_clin.R \
 # 02 - lme4qtl ------
 # covariates to be included, biomarker ratios do not include HybControlNormScale
 covs=(
-  'Age,Gender,Storage_days,Subarray,Fed.Fasted,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8'
-  'Age,Gender,Storage_days,Subarray,Fed.Fasted,HybControlNormScale,Storage,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8'
-  'Age,Gender,Storage_days,Study,Subarray,Fed.Fasted,Storage,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8'
-  'Age,Gender,Storage_days,Subarray,Fed.Fasted,Storage,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8'
-  'Age,Gender,Storage_days,Subarray,Fed.Fasted,HybControlNormScale,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8'
-  'Age,Gender,Storage_days,Subarray,Fed.Fasted,HybControlNormScale,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8'
+  'Age,Gender,Storage_days,Subarray,sv2,sv3,sv4,sv6,PC1,PC2,PC5,PC6,PC7'
+  'Age,Gender,Storage_days,Subarray,Fed.Fasted,Storage,sv3,sv4,PC1,PC4,PC5,PC8'
+  'Age,Gender,Storage_days,Study,Subarray,Fed.Fasted,HybControlNormScale,sv3,sv4,sv5,sv6,PC1,PC2,PC4,PC6,PC7,PC8'
+  # 'Age,Gender,Storage_days,Subarray,Fed.Fasted,Storage,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8'
+  # 'Age,Gender,Storage_days,Subarray,Fed.Fasted,HybControlNormScale,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8'
+  # 'Age,Gender,Storage_days,Subarray,Fed.Fasted,HybControlNormScale,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8'
 )
 # Subarray for SomaLogic run as covariates in cases where it showed up in the top 
 #   half of feature importance for 01-sample_QC.R 
 recodes=(
   'Subarray,D'
-  'Subarray,D,G'
-  'Subarray,D,G'
-  'Subarray,D,G'
-  'Subarray,B,C'
-  'Subarray,B,C,H'
+  'Subarray,D,G|Storage,Negative.80C'
+  'Subarray,D'
+  # 'Subarray,D,G'
+  # 'Subarray,B,C'
+  # 'Subarray,B,C,H'
 )
 
-parallel -j 1 Rscript 02-linreg_lme4qtl.R \
+parallel -j 3 Rscript 02-linreg_lme4qtl.R \
   -i "WSS_clin/{1}/dataProt_SS-205063.baseline_clin_continuous.{1}.WSSnorm.csv.gz" \
   -o "WSS_clin/{1}"   \
-  -p "WSS_names.txt" \
+  --prots "WSS_names.txt" \
   -v {3} \
   -d {2} \
   -s 'Age,Storage_days,Fed.Fasted' \
   -c "{1}" \
-  -t 18 \
+  -t 2 \
   -n "dataProt_SS-205063.baseline_clin_continuous.{1}" \
   ::: "${names[@]}" \
   :::+ "${recodes[@]}"  \
@@ -541,7 +544,7 @@ parallel -j 8 Rscript 01-sample_QC.R \
   -i "dataProt_SS-205063.merged.QC.csv" \
   -o "WSS_prot/{}"   \
   -p "prot_names.txt" \
-  -e "module_scores/dataProt_SS-205063.STRING.INT.WSS.csv" \
+  -e "module_scores/dataProt_SS-205063.STRING.INT.baseline.WSS.csv" \
   -v "Age,Gender,Storage_days,Study,Subarray,Fed.Fasted,HybControlNormScale,Storage"  \
   -c {} \
   -n "dataProt_SS-205063.baseline_WSS.{}" \
@@ -609,18 +612,19 @@ parallel -j 1 Rscript 06-TREAT-AD_GSEA.R   \
 # 13-sample_QC_prediction.R --------------------------------
 # module names to be tested (all R2 > 0.25)
 names=(
-  "Merged.M13"
-  "Merged.M8"
-  "Merged.M27"
-  "Merged.M5"
-  "Merged.M2"
-  "Merged.M29"
-  "Merged.M1"
-  "Merged.M32"
-  "Merged.M15"
-  "Merged.M18"
-  "Merged.M21"
-  "Merged.M14"
+  # "Merged.M13"
+  # "Merged.M8"
+  # "Merged.M27"
+  # "Merged.M5"
+  # "Merged.M2"
+  # "Merged.M29"
+  # "Merged.M1"
+  # "Merged.M32"
+  # "Merged.M15"
+  # "Merged.M18"
+  # "Merged.M21"
+  # "Merged.M14"
+  "Merged.M4"
 )
 
 # prediction or not
@@ -640,7 +644,7 @@ pred=("" ".pred")
   # -m "genomic/mypcair.PCs.csv"
 
 # All models use the same covariates here
-parallel -j 12 Rscript 13-sample_QC_prediction.R \
+parallel -j 2 Rscript 13-sample_QC_prediction.R \
   -o "WSS_predict/{}"   \
   -v "Age,Gender,Storage_days,Study,Subarray,Fed.Fasted,HybControlNormScale,Storage" \
   -c {} \
@@ -667,7 +671,7 @@ parallel -j 1 Rscript 02-linreg_lme4qtl.R \
   -v 'Age,Gender,Storage_days,Study,Fed.Fasted,HybControlNormScale,Storage,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8'   \
   -s 'Age,Storage_days,Fed.Fasted' \
   -c "{1}{2}" \
-  -t 18 \
+  -t 12 \
   -n "dataProt_SS-205063.follow-up.{1}{2}" \
   ::: "${names[@]}" \
   ::: "${pred[@]}" 
@@ -713,7 +717,7 @@ parallel -j 1 Rscript 06-TREAT-AD_GSEA.R   \
 # Continuous variables -----------------------
 names=(
   "MoCA"
-  "last_MoCA"
+  # "last_MoCA"
 )
 
 # QC and surrogates
@@ -730,14 +734,14 @@ parallel -j 2 Rscript 13-sample_QC_prediction.R \
 # 02 - lme4qtl ------
 # covariates to be included, biomarker ratios do not include HybControlNormScale
 covs=(
-  'Age,Gender,Storage_days,Subarray,Fed.Fasted,HybControlNormScale,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6'
-  'Age,Gender,Storage_days,Subarray,HybControlNormScale,Storage,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6,PC7'
+  'Age,Gender,Storage_days,Subarray,HybControlNormScale,sv2,sv4,sv6,PC1,PC2,PC3,PC5,PC6'
+  # 'Age,Gender,Storage_days,Subarray,HybControlNormScale,Storage,sv1,sv2,sv3,sv4,sv5,sv6,PC1,PC2,PC3,PC4,PC5,PC6,PC7'
 )
 # Subarray for SomaLogic run as covariates in cases where it showed up in the top 
 #   half of feature importance for 01-sample_QC.R 
 recodes=(
   'Subarray,B,E,H'
-  'Subarray,B,E,H'
+  # 'Subarray,B,E,H'
 )
 
 parallel -j 1 Rscript 02-linreg_lme4qtl.R \
@@ -768,14 +772,14 @@ parallel -j 4 Rscript 13-sample_QC_prediction.R \
 
 # covariates to be included, biomarker ratios do not include HybControlNormScale
 covs=(
-  'Age,Gender,Storage_days,Subarray,HybControlNormScale,Storage,sv1,sv2,sv3,sv4,PC1,PC2,PC3,PC5,PC6'
-  'Age,Gender,Fed.Fasted,Storage,sv1,sv2,sv3,sv4,PC1,PC2,PC5,PC6,PC8'
+  'Age,Gender,Storage_days,Subarray,HybControlNormScale,sv1,sv6,PC1,PC2,PC6,PC8'
+  # 'Age,Gender,Fed.Fasted,Storage,sv1,sv2,sv3,sv4,PC1,PC2,PC5,PC6,PC8'
 )
 # Subarray for SomaLogic run as covariates in cases where it showed up in the top 
 #   half of feature importance for 01-sample_QC.R 
 recodes=(
-  'Subarray,E'
-  ''
+  'Subarray,B,E'
+  # ''
 )
 parallel -j 1 Rscript 02-linreg_lme4qtl.R \
   -i "WSS_clin_predict/{1}/dataProt_SS-205063.follow-up_clin_continuous.{1}.INTnorm.csv.gz" \
@@ -812,7 +816,7 @@ parallel -j 1 Rscript 13-sample_QC_prediction.R \
 # 02 - lme4qtl ------
 # covariates to be included, biomarker ratios do not include HybControlNormScale
 covs=(
-  'Age,Gender,Storage_days,Subarray,Fed.Fasted,HybControlNormScale,sv1,sv2,PC1,PC3,PC5,PC6,PC7,PC8'
+  'Age,Gender,Storage_days,Subarray,Fed.Fasted,HybControlNormScale,sv2,sv3,sv6,PC1,PC3,PC5,PC6,PC7,PC8'
 )
 # Subarray for SomaLogic run as covariates in cases where it showed up in the top 
 #   half of feature importance for 01-sample_QC.R 
@@ -851,7 +855,7 @@ parallel -j 1 Rscript 13-sample_QC_prediction.R \
 
 # covariates to be included, biomarker ratios do not include HybControlNormScale
 covs=(
-  'Age,Gender,Storage_days,Fed.Fasted,Storage,sv1,PC3,PC5,PC7'
+  'Age,Gender,Storage_days,Fed.Fasted,Storage,sv1,PC1,PC3,PC5'
 )
 # Subarray for SomaLogic run as covariates in cases where it showed up in the top 
 #   half of feature importance for 01-sample_QC.R 

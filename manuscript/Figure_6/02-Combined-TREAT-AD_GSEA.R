@@ -65,7 +65,7 @@ option_list <- list(
   make_option(
     c("-r", "--ref"),
     type = "character",
-    default = "../../cell_type_prot/STRING.INT.WSS.terms.csv",
+    default = "../../module_scores/STRING.INT.WSS.terms.csv",
     help = "File path to module term names [default: %default]"
   ),
   make_option(

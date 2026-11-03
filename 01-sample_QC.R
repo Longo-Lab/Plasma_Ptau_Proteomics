@@ -28,6 +28,7 @@
 ## ---------------------------
 
 ## load up the packages we will need:  (uncomment as required)
+options(future.cmdargs = character(0)) # some dependency loads future
 library(data.table)
 library(RNOmni)
 library(dplyr)     # for data wrangling
@@ -395,7 +396,7 @@ cv_model_pls$results %>%
 # plot cross-validated RMSE
 # ggplot(cv_model_pls)
 p1 <- vip::vip(cv_model, geom="point", num_features = 50, bar = FALSE) + 
-  ggtitle("GLM - 50-fold Cross Validation") + 
+  ggtitle("GLM - 5-fold Cross Validation") + 
   geom_vline(xintercept = min(25, floor(length(cv_model$coefnames) / 2)))
 p2 <- vip::vip(cv_model_pls, geom="point", num_features = 50, bar = FALSE) +
   ggtitle(paste("Partial Least Squares - Best Fit ", 

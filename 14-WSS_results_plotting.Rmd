@@ -32,6 +32,7 @@ library(ordinal)
 library(corrplot)
 library(patchwork)
 library(extrafont)
+library(Cairo)
 
 # suppress messages
 knitr::opts_chunk$set(warning = FALSE, message = FALSE)
@@ -695,7 +696,7 @@ ggsave(
 ```{r plotPredvalidation}
 library(ggrepel)
 
-glm_cv <- fread("prediction_models/STRING_WSS/all_model/model_info/joinet/INT/joinet_model_metrics_c_index_STRING_WSS_INT.csv")
+glm_cv <- fread("prediction_models/STRING_WSS_v2/model_info/joinet/joinet_model_metrics_c_index_STRING_WSS_INT_test.csv")
 # glm_cv[, outcome := gsub("\\.", "\\-", outcome)]
 glm_cv <- merge(glm_cv, scores, by.x = 'outcome', by.y = 'name')
 glm_cv[, c("C.index", "C.SE") := lapply(tstrsplit(C_index, " ± "), as.numeric)]
@@ -881,7 +882,7 @@ p
 ```{r plot_dist_}
 # load data
 dat <- fread("dataProt_SS-205063.follow-up_clin.csv")
-preds <- fread("prediction_models/STRING_WSS/all_model/model_info/joinet/INT/Biomarkers_Age_Sex.csv")
+preds <- fread("prediction_models/STRING_WSS_v2/model_info/joinet/Biomarkers_Age_Sex.csv")
 names(preds)[-1] <- paste0(names(preds)[-1], ".pred")
 
 # merge and simplify
@@ -943,15 +944,15 @@ p1 <- ggplot(plot_data, aes(x = score, y = term, fill = col, color = col)) +
     legend.background = element_blank()
   )
 
-# p1
-ggsave(
-  filename = file.path("manuscript", "Figure_6", 
-    paste(nameset, "module_dist_joy_plot.pdf", sep = ".")
-  ),
-  plot = p1,
-  height = 5,
-  device = cairo_pdf
-)
+p1
+# ggsave(
+#   filename = file.path("manuscript", "Figure_6", 
+#     paste(nameset, "module_dist_joy_plot.pdf", sep = ".")
+#   ),
+#   plot = p1,
+#   height = 5,
+#   device = cairo_pdf
+# )
 
 
 ```

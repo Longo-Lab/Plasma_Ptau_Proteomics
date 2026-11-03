@@ -182,7 +182,7 @@ my_volcano <- function(x, titl = NULL, sub = NULL, thresh = 0.05, lfc = 0) {
     labFace = "bold",
     drawConnectors = TRUE,
     widthConnectors = 0.25,
-    max.overlaps = 40,
+    max.overlaps = 30,
     arrowheads = FALSE, 
     # xlim = c(-9,9),
     xlab = "beta",
@@ -289,19 +289,19 @@ lapply(c("beta", "t stat"), function(j) {
 # prep for printing
 # options(ggrepel.max.overlaps = 150)
 # CairoPDF(
-pdf(
-  file = file.path(output, paste(nameset, "volcanos.pdf", sep = ".")),
-  height = 11,
-  width = 8.5
-)
+# pdf(
+  # file = file.path(output, paste(nameset, "volcanos.pdf", sep = ".")),
+  # height = 11,
+  # width = 8.5
+# )
 
-# if file exists, make a volcano
-lapply(input, function(i) {
-  x <- result[dx == i]
-  my_volcano(x, titl = i, sub = paste("N =", unique(x[, nobs])))
-})
+# # if file exists, make a volcano
+# lapply(input, function(i) {
+  # x <- result[dx == i]
+  # my_volcano(x, titl = i, sub = paste("N =", unique(x[, nobs])))
+# })
 
-graphics.off()
+# graphics.off()
 
 
 # if file exists, make a volcano
@@ -317,3 +317,13 @@ ggsave(
   height = 14,
   dpi = 150
 )
+
+
+ggsave(
+  filename = file.path(output, paste(nameset, "volcanos.pdf", sep = ".")), 
+  plot = wrap_plots(p.list) + plot_layout(nrow = 2), 
+  width = 20, 
+  height = 14,
+  device = cairo_pdf
+)
+

@@ -314,11 +314,21 @@ if (score %like% "eigengenes") {
 }
 
 # Map in PCs assumes your primary data table exists 
-x <- fread(
-  file.path(data_path, 
-    paste("dataProt_SS-205063", score, tail, sep = ".")
-  ), 
-  colClasses = c(SampleID = "character")
+x <- rbindlist(
+  list(
+    fread(
+      file.path(data_path, 
+        paste("dataProt_SS-205063", "STRING.INT.baseline.WSS", tail, sep = ".")
+      ), 
+      colClasses = c(SampleID = "character")
+    ),
+    fread(
+      file.path(data_path, 
+        paste("dataProt_SS-205063", "STRING.INT.follow-up.WSS", tail, sep = ".")
+      ), 
+      colClasses = c(SampleID = "character")
+    )
+  )
 )
 a <- merge(a, x, by = "SampleID")
 # checking that eigengenes succeeded

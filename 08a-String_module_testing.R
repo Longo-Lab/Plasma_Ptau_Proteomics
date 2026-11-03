@@ -542,7 +542,7 @@ plot_single_module <- function(g, biomarker, cluster,
   plot(g_sub,
        vertex.color = V(g_sub)$color,
        vertex.size = 5,
-       vertex.label = NA,
+       vertex.label = V(g_sub)$symbol,
        vertex.frame.color = "#8d191d",
        edge.color = E(g_sub)$color,
        edge.width = E(g_sub)$width,
@@ -592,6 +592,13 @@ plot_single_module(g_all,
   node_col = node_colors, 
   edge_col = edge_colors,
   output_file = "module_scores/STRING_merged_network_Merged.M8.pdf"
+)
+plot_single_module(g_all, 
+  biomarker = "Merged", 
+  cluster = "M26", 
+  node_col = node_colors, 
+  edge_col = edge_colors,
+  output_file = "module_scores/STRING_merged_network_Merged.M26.pdf"
 )
 
 # # Simple one-liner to plot Merged.M2

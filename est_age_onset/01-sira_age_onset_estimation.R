@@ -65,8 +65,14 @@ option_list <- list(
   make_option(
     c("-e", "--eigengenes"),
     type = "character",
-    default = "../module_scores/dataProt_SS-205063.STRING.INT.WSS.csv",
-    help = "File path to eigengenes csv [default: %default]"
+    default = "../module_scores/dataProt_SS-205063.STRING.INT.baseline.WSS.csv",
+    help = "File path to baseline eigengenes csv [default: %default]"
+  ),
+  make_option(
+    c("--eigengenes_followup"),
+    type = "character",
+    default = "../module_scores/dataProt_SS-205063.STRING.INT.follow-up.WSS.csv",
+    help = "File path to follow-up eigengenes csv [default: %default]"
   ),
   make_option(
     c("-m", "--pcs"),
@@ -103,6 +109,7 @@ fields <- c(
   "output",
   "biomarker",
   "eigengenes",
+  "eigengenes_followup",
   "pcs",
   "ref",
   "outliers",
@@ -776,8 +783,13 @@ ggsave(
 )
 
 # relationship to eigengenes -----------------------------------------------
-# Load eigengenes
-x <- fread(eigengenes)
+# Load eigengenes -- `a` spans both baseline and follow-up visits (no
+# cohort filtering upstream), so both cohort-specific eigengenes files are
+# concatenated before merging, matching the fix in 11-Module_clustering.Rmd.
+x <- rbindlist(list(
+  fread(eigengenes, colClasses = c(SampleID = "character")),
+  fread(eigengenes_followup, colClasses = c(SampleID = "character"))
+))
 a <- merge(a, x, by = "SampleID")
 
 # load term names 

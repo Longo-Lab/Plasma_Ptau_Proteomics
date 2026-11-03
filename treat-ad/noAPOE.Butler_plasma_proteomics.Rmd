@@ -734,6 +734,9 @@ cor.df %>% arrange(desc(abs(correlation)), p_value) %>%
   saveRDS('biodomain_biomarker_correlation.RDS')
 
 # cor.df <- readRDS('biodomain_biomarker_correlation.RDS')
+# fwrite(as.data.table(cor.df)[, data := NULL][order(p_value)], 
+#   file = 'biodomain_biomarker_correlation.csv'
+# )
 
 ```
 

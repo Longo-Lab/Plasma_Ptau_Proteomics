@@ -1,0 +1,239 @@
+---
+title: "05-Validation_stats.Rmd"
+output: html_notebook
+---
+
+
+
+## Setup
+```{r setup}
+library(data.table)
+library(ggpubr)
+# library(WGCNA)
+# library(RNOmni)
+
+input <- "celltype_scores"
+output <- "validation"
+nameset <- "ADRCvsGNPC"
+val <- "GNPC_table"
+ref <- "dataProt_SS-205063"
+baseline <- fread("GNPC_baseline.csv")
+
+```
+
+## Functions
+```{r}
+# # Method 3A: Apply discovery clustering to validation eigengenes
+# validate_clustering <- function(discovery_eigengenes, validation_eigengenes, 
+#                                 discovery_clusters, k) {
+# 
+#   # Match modules between datasets
+#   common_modules <- intersect(colnames(discovery_eigengenes), 
+#                               colnames(validation_eigengenes))
+# 
+#   disc_matched <- discovery_eigengenes[, common_modules]
+#   val_matched <- validation_eigengenes[, common_modules]
+# 
+#   # Get cluster centers from discovery dataset
+#   cluster_centers <- aggregate(disc_matched, 
+#     by = list(Cluster = discovery_clusters), 
+#     FUN = mean
+#   )
+#   rownames(cluster_centers) <- cluster_centers$Cluster
+#   cluster_centers$Cluster <- NULL
+# 
+#   # Assign validation samples to nearest cluster center
+#   validation_assignments <- apply(val_matched, 1, function(sample) {
+#     distances <- apply(cluster_centers, 1, function(center) {
+#       sqrt(sum((sample - center)^2))
+#     })
+#     names(which.min(distances))
+#   })
+# 
+#   return(validation_assignments)
+# }
+# 
+# # Method 3B: Compare cluster compositions
+# compare_cluster_compositions <- function(discovery_metadata, validation_metadata,
+#                                          discovery_clusters, validation_clusters) {
+# 
+#   # Assuming you have phenotype/group information
+#   disc_composition <- table(discovery_clusters, discovery_metadata$phenotype)
+#   val_composition <- table(validation_clusters, validation_metadata$phenotype)
+# 
+#   # Calculate proportion similarity
+#   disc_props <- prop.table(disc_composition, 1)
+#   val_props <- prop.table(val_composition, 1)
+# 
+#   return(list(discovery = disc_props, validation = val_props))
+# }
+
+```
+
+
+# Preservation sampling outcome
+```{r pres}
+# read in
+grps <- c("A", "B", "C", "D", "E", "F", "I", "L", "N", "P", "Q", "Mix") 
+dt_list <- lapply(grps, function(i) {
+  fread(file.path(output, paste(nameset, i, "preservation_stats", "csv", sep = ".")))
+})
+dt <- rbindlist(dt_list, idcol = "Sampling")
+
+sum_dt <- dt[term != "", .(
+  N = .N,
+  moduleSize = unique(moduleSize),
+  mean.Zsum = mean(Zsummary.pres),
+  is.mod = sum(Preservation == "Moderate"),
+  is.str = sum(Preservation == "Strong")
+), by = .(term, module)][order(-mean.Zsum)]
+
+fwrite(sum_dt, file = file.path(output, paste0(nameset, ".preservation_summary.csv")))
+fwrite(list(sum_dt[mean.Zsum > 2 & (is.mod + is.str >= 7), module]), file = "WSS_names.txt")
+
+```
+
+# Heatmap of WSS/eigengene
+```{r}
+# K-means Cluster Validation ----------------------------------------------
+# load eigengenes
+vali_eig <- fread(file.path(input, paste("GNPC", "STRING.INT.WSS.csv", sep = ".")))
+vali_eig <- as.matrix(vali_eig[, -2], rownames = "SampleID")
+# disc_eig <- fread(file.path(input, paste(ref, "STRING.INT.eigengenes.csv", sep = ".")))
+
+# set up factors for contributor_code
+baseline <- baseline[contributor_code %in% grps]
+baseline[, contributor_code := factor(
+  x = contributor_code, 
+  levels = grps
+)]
+
+ 
+# Plotting the clusters -----------------------------
+library(ComplexHeatmap)
+
+scor <- sum_dt$term
+names(scor) <- sum_dt$module
+common_names <- colnames(vali_eig)[colnames(vali_eig) %in% names(scor)]
+labs <- scor[common_names] 
+set.seed(3)
+hm <- Heatmap(
+  t(vali_eig),
+  name = "Score clustering across GNPC",
+  cluster_columns = FALSE,
+  # column_km = 4,
+  column_dend_height = unit(4, "cm"), 
+  # cluster_column_slices = TRUE,
+  cluster_rows = FALSE,
+  show_row_dend = FALSE,
+  show_column_names = FALSE,
+  # column_split = validation_clusters,
+  # column_split = data.frame(
+  #   baseline[match(rownames(vali_eig), sample_id), .(sample_id, contributor_code)],
+  #   row.names = 'sample_id'
+  # ),
+  row_labels = labs,
+  top_annotation = HeatmapAnnotation(
+    df = data.frame(
+      baseline[match(rownames(vali_eig), sample_id), .(sample_id, contributor_code, age_at_visit, sex, Diagnosis_group)],
+      row.names = 'sample_id'
+    ),
+    col = list(
+      Diagnosis_group = setNames(get_palette("BuPu", 4)[-1], c("HC", "MCI", "AD")),
+      contributor_code = setNames(palette.colors(n = 12, palette = "Alphabet"), levels(baseline$contributor_code))
+    )
+  ),
+  # Set legend columns parameter
+  heatmap_legend_param = list(
+    title = "Eigengene", 
+    legend_width = unit(4, "cm"),
+    nrow = 2  # Number of rows in the legend (creates columns)
+  )
+)
+
+pdf(
+  file = file.path(output, 
+    paste(nameset, "heat_clust.INT.no_cluster.pdf", sep=".")
+  ), 
+  width = 18, 
+  height = 4 + 0.25 * ncol(vali_eig) 
+)
+set.seed(3)
+drawn <- (draw(hm))
+dev.off()
+
+
+```
+
+
+# Heatmap of WSS/eigengene
+```{r}
+# K-means Cluster Validation ----------------------------------------------
+# load eigengenes
+vali_eig <- fread(file.path(input, paste("GNPC", "STRING.WSS.csv", sep = ".")))
+vali_eig <- as.matrix(vali_eig[, -2], rownames = "SampleID")
+# disc_eig <- fread(file.path(input, paste(ref, "STRING.INT.eigengenes.csv", sep = ".")))
+
+# # set up factors for contributor_code
+# baseline <- baseline[contributor_code %in% grps]
+# baseline[, contributor_code := factor(
+#   x = contributor_code, 
+#   levels = grps
+# )]
+
+ 
+# Plotting the clusters -----------------------------
+library(ComplexHeatmap)
+
+scor <- sum_dt$term
+names(scor) <- sum_dt$module
+common_names <- colnames(vali_eig)[colnames(vali_eig) %in% names(scor)]
+labs <- scor[common_names] 
+set.seed(3)
+hm <- Heatmap(
+  t(vali_eig),
+  name = "Score clustering across GNPC",
+  cluster_columns = FALSE,
+  # column_km = 4,
+  column_dend_height = unit(4, "cm"), 
+  # cluster_column_slices = TRUE,
+  cluster_rows = FALSE,
+  show_row_dend = FALSE,
+  show_column_names = FALSE,
+  # column_split = validation_clusters,
+  # column_split = data.frame(
+  #   baseline[match(rownames(vali_eig), sample_id), .(sample_id, contributor_code)],
+  #   row.names = 'sample_id'
+  # ),
+  row_labels = labs,
+  top_annotation = HeatmapAnnotation(
+    df = data.frame(
+      baseline[match(rownames(vali_eig), sample_id), .(sample_id, contributor_code, age_at_visit, sex, Diagnosis_group)],
+      row.names = 'sample_id'
+    ),
+    col = list(
+      Diagnosis_group = setNames(get_palette("BuPu", 4)[-1], c("HC", "MCI", "AD")),
+      contributor_code = setNames(palette.colors(n = 12, palette = "Alphabet"), levels(baseline$contributor_code))
+    )
+  ),
+  # Set legend columns parameter
+  heatmap_legend_param = list(
+    title = "Eigengene", 
+    legend_width = unit(4, "cm"),
+    nrow = 2  # Number of rows in the legend (creates columns)
+  )
+)
+
+pdf(
+  file = file.path(output, 
+    paste(nameset, "heat_clust.Log2.no_cluster.pdf", sep=".")
+  ), 
+  width = 18, 
+  height = 4 + 0.25 * ncol(vali_eig) 
+)
+set.seed(3)
+drawn <- (draw(hm))
+dev.off()
+
+
+```
