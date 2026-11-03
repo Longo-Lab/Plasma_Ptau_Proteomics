@@ -517,16 +517,6 @@ cv_model_pls$results %>%
 ##      1 0.9399164 0.133929 0.7375119 0.09900189 0.07164967 0.0701038
 # plot cross-validated RMSE
 # ggplot(cv_model_pls)
-p1 <- vip::vip(cv_model, geom="point", num_features = 50, bar = FALSE) + 
-  ggtitle("GLM - 5-fold Cross Validation") + 
-  geom_vline(xintercept = min(25, floor(length(cv_model$coefnames) / 2)))
-p2 <- vip::vip(cv_model_pls, geom="point", num_features = 50, bar = FALSE) +
-  ggtitle(paste("Partial Least Squares - Best Fit ", 
-                cv_model_pls$bestTune$ncomp, "PCs")) + 
-  geom_vline(xintercept = min(25, floor(length(cv_model_pls$coefnames) / 2)))
-# p5 <- vip::vip(cv_model_pls, num_features = 55, bar = FALSE) +
-  # ggtitle(paste("Partial Least Squares - Best Fit ", npcs, "PCs"))
-
 
 # Random Forest feature scoring ---------------------------------------
 
@@ -602,27 +592,75 @@ rf_permutation <- ranger(
   verbose = FALSE,
 )
 
-p3 <- vip::vip(rf_impurity, geom="point", num_features = 50, bar = FALSE) + 
-  ggtitle("Random Forest - Impurity") + 
-  geom_vline(xintercept = min(25, floor(n_features/2)))
-p4 <- vip::vip(rf_permutation, geom="point", num_features = 50, bar = FALSE) +
-  ggtitle("Random Forest - Permutation") + 
-  geom_vline(xintercept = min(25, floor(n_features/2)))
+if (packageVersion("vip") >= as.package_version("0.5"){
+  plots <- NULL 
+  models <- list(cv_model = cv_model, 
+                 cv_model_pls = cv_model_pls, 
+                 rf_impurity = rf_impurity, 
+                 rf_permutation = rf_permutation)
+  
+  titles <- c(cv_model="GLM - 5-fold Cross Validation", 
+              cv_model_pls=(paste("Partial Least Squares - Best Fit ",
+                                  cv_model_pls$bestTune$ncomp, "PCs")), 
+              rf_impurity="Random Forest - Impurity", 
+              rf_permutation="Random Forest - Permutation")
+  
+  for (model in names(models)) {
+    vip_res <- vip::vi(models[[model]], num_features = 50) %>% 
+      arrange(Importance) %>% 
+      mutate(Variable = factor(Variable, levels=Variable))
+    
+    plots[[model]] <- ggplot(vip_res, 
+                             aes(x=Importance, y=Variable))+ 
+      geom_point()+
+      ggtitle(titles[[model]]) +
+      geom_vline(xintercept = min(25, floor(length(cv_model$coefnames) / 2))) + 
+      cowplot::theme_half_open() + 
+      ggforestplot::geom_stripes() + 
+      cowplot::background_grid(major="x")
+  }
+  
+  Cairo::CairoPDF(
+    file = file.path(output, paste(nameset, "feature_importance.pdf", sep = ".")),
+    width = 11,
+    height = 11
+  )
+  plots
+  dev.off()
+} else {
+  p1 <- vip::vip(cv_model, geom="point", num_features = 50, bar = FALSE) + 
+    ggtitle("GLM - 5-fold Cross Validation") + 
+    geom_vline(xintercept = min(25, floor(length(cv_model$coefnames) / 2)))
+  p2 <- vip::vip(cv_model_pls, geom="point", num_features = 50, bar = FALSE) +
+    ggtitle(paste("Partial Least Squares - Best Fit ", 
+                cv_model_pls$bestTune$ncomp, "PCs")) + 
+    geom_vline(xintercept = min(25, floor(length(cv_model_pls$coefnames) / 2)))
+  # p5 <- vip::vip(cv_model_pls, num_features = 55, bar = FALSE) +
+    # ggtitle(paste("Partial Least Squares - Best Fit ", npcs, "PCs"))
+  
+  p3 <- vip::vip(rf_impurity, geom="point", num_features = 50, bar = FALSE) + 
+    ggtitle("Random Forest - Impurity") + 
+    geom_vline(xintercept = min(25, floor(n_features/2)))
+  p4 <- vip::vip(rf_permutation, geom="point", num_features = 50, bar = FALSE) +
+    ggtitle("Random Forest - Permutation") + 
+    geom_vline(xintercept = min(25, floor(n_features/2)))
+  # gridExtra::grid.arrange(p1, p2, nrow = 1)
+  
+  # feature interaction
+  # layout <- "
+  # AACCCCCC
+  # BBCCCCCC
+  # "
+  pdf(
+    file = file.path(output, paste(nameset, "feature_importance.pdf", sep=".")), 
+    width = 11, 
+    height = 11
+  )
+  p1 + p2 + p3 + p4
+  dev.off()
 
-# gridExtra::grid.arrange(p1, p2, nrow = 1)
-
-# feature interaction
-# layout <- "
-# AACCCCCC
-# BBCCCCCC
-# "
-pdf(
-  file = file.path(output, paste(nameset, "feature_importance.pdf", sep=".")), 
-  width = 11, 
-  height = 11
-)
-p1 + p2 + p3 + p4
-dev.off()
+}
+            
 
 # Post-covariate determination ----------------------------------------------
 # shield improper outcome
