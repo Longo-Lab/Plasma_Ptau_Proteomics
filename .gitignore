@@ -11,6 +11,7 @@
 !*.ipynb
 !*.md
 !README.md
+!LICENSE
 !.gitignore
 # etc...
 
