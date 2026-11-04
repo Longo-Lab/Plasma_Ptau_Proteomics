@@ -362,11 +362,11 @@ vip_plot <- function(object, num_features = 50) {
 
 p1 <- vip_plot(cv_model, num_features = 50) +
   ggtitle("GLM - 5-fold Cross Validation") +
-  geom_hline(xintercept = min(25, floor(length(cv_model$coefnames) / 2)))
+  geom_hline(yintercept = min(25, floor(length(cv_model$coefnames) / 2)))
 p2 <- vip_plot(cv_model_pls,num_features = 50) +
   ggtitle(paste("Partial Least Squares - Best Fit ",
                 cv_model_pls$bestTune$ncomp, "PCs")) +
-  geom_hline(xintercept = min(25, floor(length(cv_model_pls$coefnames) / 2)))
+  geom_hline(yintercept = min(25, floor(length(cv_model_pls$coefnames) / 2)))
 
 # Random Forest feature scoring ---------------------------------------
 rf1 <- ranger(
@@ -438,10 +438,10 @@ rf_permutation <- ranger(
 
 p3 <- vip_plot(rf_impurity, num_features = 50) +
   ggtitle("Random Forest - Impurity") +
-  geom_hline(xintercept = min(25, floor(n_features / 2)))
+  geom_hline(yintercept = min(25, floor(n_features / 2)))
 p4 <- vip_plot(rf_permutation, num_features = 50) +
   ggtitle("Random Forest - Permutation") +
-  geom_hline(xintercept = min(25, floor(n_features / 2)))
+  geom_hline(yintercept = min(25, floor(n_features / 2)))
 
 pdf(
   file = file.path(output, paste(nameset, "feature_importance.pdf", sep = ".")),
