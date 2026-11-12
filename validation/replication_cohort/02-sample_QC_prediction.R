@@ -3,7 +3,8 @@
 ##
 ## Script name: 02-sample_QC_prediction.R
 ##
-## Version: 0.0.1
+## Version: 0.0.2
+##   v0.0.2 - INT proteins before SVA and the INTnorm file (not with --clin)
 ##
 ## Purpose of script: covariate/surrogate-variable selection for the
 ## replication cohort, before running the Figure 6 association tests
@@ -189,6 +190,20 @@ a <- fread(input)
 # shield improper outcome 
 setnames(a, old = orig_outcome, new = outcome)
 a <- a[!is.na(get(outcome))]
+
+# Inverse rank normalization (INT) of proteins to z-scale ----------------
+# The INTnorm file feeds the glm in 03-linreg_glm.R, so betas are per SD of
+# an INT protein rather than per RFU. Skipped with --clin, where prots are
+# WSS modules that are already on an INT scale.
+if (!clin) {
+  int_cols <- intersect(prots, names(a))
+  stopifnot("no columns in --prots found in the input" = length(int_cols) > 0)
+  if (length(int_cols) < length(prots)) {
+    print(sprintf("%d of %d prots not found in the input and not normalized",
+      length(prots) - length(int_cols), length(prots)))
+  }
+  a[, (int_cols) := lapply(.SD, RankNorm), .SDcols = int_cols]
+}
 
 # surrogate variables (optional) ---------------------------------------
 if (svs > 0) {
