@@ -9,7 +9,7 @@ params:
   probe_symbol_key_path: "soma_probe_to_symbol_key.csv"
   normalize_proteomics: TRUE
   biomarker_path: "your_biomarker_data.csv"
-  self_normalize_biomarkers: "PlasmapTau217,PlasmaGFAP,PlasmapTau217_AB42Ratio"
+  self_normalize_biomarkers: "PlasmaAB142P,PlasmaAB140P,PlasmaABRatio,PlasmapTau217,PlasmaGFAP,PlasmaNfL,PlasmapTau217_AB42Ratio"
   clinical_path: "your_clinical_data.csv"
   output_dir: "."
 ---
