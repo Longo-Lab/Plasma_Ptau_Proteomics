@@ -192,9 +192,7 @@ setnames(a, old = orig_outcome, new = outcome)
 a <- a[!is.na(get(outcome))]
 
 # Inverse rank normalization (INT) of proteins to z-scale ----------------
-# The INTnorm file feeds the glm in 03-linreg_glm.R, so betas are per SD of
-# an INT protein rather than per RFU. Skipped with --clin, where prots are
-# WSS modules that are already on an INT scale.
+# Skipped with --clin, where prots are WSS modules that are already on an INT scale.
 if (!clin) {
   int_cols <- intersect(prots, names(a))
   stopifnot("no columns in --prots found in the input" = length(int_cols) > 0)
